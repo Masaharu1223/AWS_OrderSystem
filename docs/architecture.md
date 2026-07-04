@@ -204,13 +204,13 @@ DELETE /cart/{sessionId}/items/{itemId}  → 204
 
 ```
 POST  /orders                   → 201 Order   header: Idempotency-Key   body: { "sessionId": "...", "storeId": "..." }
-PATCH /orders/{orderId}/cancel  → 200 Order | 409（RECEIVED 以外）
+PATCH /orders/{orderId}/cancel  → 200 Order | 409（STORE_ACCEPTED 以外）
 ```
 
 ```json
 // Order
 { "orderId": "ord-xyz", "orderNumber": 42, "storeId": "store-01",
-  "status": "RECEIVED", "totalPrice": 1280,
+  "status": "STORE_ACCEPTED", "totalPrice": 1280,
   "lines": [ { "productId": "prod-001", "name": "カフェラテ",
     "variant": { "temperature": "iced", "size": "M" }, "quantity": 2, "unitPrice": 500 } ],
   "createdAt": "2026-07-02T12:03:00Z" }
@@ -218,7 +218,7 @@ PATCH /orders/{orderId}/cancel  → 200 Order | 409（RECEIVED 以外）
 
 - 注文はサーバー側カート（sessionId）から生成し、金額を再計算する。
 - `Idempotency-Key` を DynamoDB に記録し、同一キーの再送には同じ Order を返す。
-- **order-fn は SQS も EventBridge も直接呼ばない**。DynamoDB へ `RECEIVED` で書くのみ。後続は Streams → EventBridge が駆動する。
+- **order-fn は SQS も EventBridge も直接呼ばない**。DynamoDB へ `STORE_ACCEPTED` で書くのみ。後続は Streams → EventBridge が駆動する。
 
 ### 6.4 status-fn
 
@@ -238,13 +238,13 @@ GET /orders/{orderId}/queue-position  → 200 QueuePosition
 ### 6.5 store-fn（Cognito 認証）
 
 ```
-GET   /stores/{storeId}/orders?status=RECEIVED → 200 { "orders": [ OrderCard ] }
-PATCH /orders/{orderId}/status                 → 200 Order | 409   body: { "fromStatus": "RECEIVED", "toStatus": "PREPARING" }
+GET   /stores/{storeId}/orders?status=STORE_ACCEPTED → 200 { "orders": [ OrderCard ] }
+PATCH /orders/{orderId}/status                 → 200 Order | 409   body: { "fromStatus": "STORE_ACCEPTED", "toStatus": "PREPARING" }
 ```
 
 - 認証は `req.RequestContext.Authorizer.JWT.Claims` から取得。
 - PATCH は **状態遷移を条件付き書き込みで検証**する（`fromStatus` を条件式に含め、二重スワイプ・競合を 409 で弾く）。§5.4 のアンドゥ確定時における唯一の書き込み点。
-- 遷移規則: `RECEIVED → PREPARING → READY → COMPLETED`（それ以外は 409）。
+- 遷移規則: `STORE_ACCEPTED → PREPARING → READY_PICKUP → HANDED_OVER`（それ以外は 409）。
 
 ---
 
@@ -278,7 +278,7 @@ func handle(ctx context.Context, req events.APIGatewayWebsocketProxyRequest) (ev
 
 // detail-type: "OrderStatusChanged"（Streams MODIFY）
 { "orderId": "ord-xyz", "storeId": "store-01", "zone": "B",
-  "oldStatus": "RECEIVED", "newStatus": "PREPARING", "changedAt": "2026-07-02T12:05:00Z" }
+  "oldStatus": "STORE_ACCEPTED", "newStatus": "PREPARING", "changedAt": "2026-07-02T12:05:00Z" }
 ```
 
 ### 8.2 machine-router-fn
@@ -326,7 +326,7 @@ sequenceDiagram
 
     C->>H: POST /orders (Idempotency-Key)
     H->>O: invoke
-    O->>D: 注文を RECEIVED で書込
+    O->>D: 注文を STORE_ACCEPTED で書込
     O-->>C: 201 {orderId, orderNumber}
     D-->>EB: Streams INSERT → OrderPlaced
     EB->>R: OrderPlaced
