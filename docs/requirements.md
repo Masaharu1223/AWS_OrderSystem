@@ -2,7 +2,7 @@
 
 **バージョン**: 1.2  
 **作成日**: 2026-06-30  
-**最終更新**: 2026-07-11（§6を明細（FulfillmentLine）単位のステータスモデルへ改訂。§4.5・§5.3のキャンセル・スワイプ操作記述を整合。§14.10を追加。[Issue #11](https://github.com/Masaharu1223/AWS_OrderSystem/issues/11) の決定を反映）  
+**最終更新**: 2026-07-12（§6を明細（FulfillmentLine）単位のステータスモデルへ改訂。§4.5・§5.3のキャンセル・スワイプ操作記述を整合。§14.10を追加。[Issue #11](https://github.com/Masaharu1223/AWS_OrderSystem/issues/11) の決定を反映。改訂時に欠落していた `PENDING_PAYMENT`/`PAYMENT_FAILED`（決済関連の予約定義）を§6.2に復元）  
 **ステータス**: 確定（実装着手可能）
 
 ---
@@ -210,6 +210,13 @@ WAITING ──→ PREPARING ──→ READY ──→ HANDED_OVER
 | `READY_PICKUP` | 全明細（`CANCELLED` を除く）が `READY` |
 | `HANDED_OVER` | 全明細（`CANCELLED` を除く）が `HANDED_OVER` |
 | `CANCELLED` | 全明細が `CANCELLED` |
+
+`PENDING_PAYMENT`（決済待ち）と `PAYMENT_FAILED`（決済失敗）の 2 つは将来のアプリ内決済導入時の予約定義であり（§12.1）、明細がまだ作成されていない決済前の段階を表す。そのため上記の導出ルールの対象外とし、注文レコードへ直接書き込む値のまま維持する。
+
+| ステータス | 説明 | 遷移元 | 遷移先 |
+| --- | --- | --- | --- |
+| `PENDING_PAYMENT` | 決済待ち（予約定義のみ、MVP未実装） | — | `STORE_ACCEPTED`（決済成功時に明細が作成される） |
+| `PAYMENT_FAILED` | 決済失敗（予約定義のみ、MVP未実装） | `PENDING_PAYMENT` | — |
 
 `READY_PICKUP`（受取可能）になるのは、**最も遅く完成したゾーンの明細が `READY` になった瞬間**である。顧客への「受取可能」通知（§9）は、この注文ステータスの変化を契機に送信する（明細単体の `READY` では送信しない）。
 
