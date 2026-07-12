@@ -1,8 +1,8 @@
 # 要件定義書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 1.2  
+**バージョン**: 1.3  
 **作成日**: 2026-06-30  
-**最終更新**: 2026-07-12（§6を明細（FulfillmentLine）単位のステータスモデルへ改訂。§4.5・§5.3のキャンセル・スワイプ操作記述を整合。§14.10を追加。[Issue #11](https://github.com/Masaharu1223/AWS_OrderSystem/issues/11) の決定を反映。改訂時に欠落していた `PENDING_PAYMENT`/`PAYMENT_FAILED`（決済関連の予約定義）を§6.2に復元）  
+**最終更新**: 2026-07-12（`architecture.md` v2.0改訂に合わせ、§11.2 Lambda一覧に`order-aggregator-fn`を追加、§11.3 DynamoDBアクセスパターンをAP-Z1〜Z4・GSI2〔ゾーン別製造キュー〕へ拡張。詳細キー設計は`architecture.md`§6を正とする）  
 **ステータス**: 確定（実装着手可能）
 
 ---
@@ -440,8 +440,9 @@ WAITING ──→ PREPARING ──→ READY ──→ HANDED_OVER
 > **補足（インターフェース上の注記）**
 >
 > - `GET /menu/{productId}`: menu-fn は全メニュー（小規模・キャッシュ可能）を取得し、その中から該当商品を返す。パスに category を含めなくてよい。
-> - **push-fn**: サーバー → クライアントの push は **EventBridge 駆動**（DynamoDB Streams のステータス変化 → EventBridge → PostToConnection）で行う。WebSocket の `$default` は当面クライアント → サーバー送信のスタブに留める。
-> - **machine-router-fn / zone-consumer-fn**: 注文の書き込みを **DynamoDB Streams → EventBridge** で捕捉し、machine-router-fn がゾーン判定 → SQS FIFO へエンキュー。`zone-consumer-fn` が各キューを消費して受付順を確定する。
+> - **push-fn**: サーバー → クライアントの push は **EventBridge 駆動**（`order-aggregator-fn` が発行する状態変化イベント → EventBridge → PostToConnection）で行う。WebSocket の `$default` は当面クライアント → サーバー送信のスタブに留める。
+> - **machine-router-fn / zone-consumer-fn**: 注文の書き込みを **DynamoDB Streams → EventBridge** で捕捉し、machine-router-fn が明細ごとのゾーンへ SQS FIFO エンキュー。`zone-consumer-fn` が各キューを消費して明細ごとの受付順を確定する。
+> - **order-aggregator-fn**: 明細（LINE）の変化を **DynamoDB Streams から直接**（EventBridge を介さず）消費し、注文の導出ステータス（§6.2）を再計算する。技術的な詳細は `architecture.md` §9.8 を参照。
 
 ### 11.2 Lambda 関数一覧
 
@@ -450,11 +451,12 @@ WAITING ──→ PREPARING ──→ READY ──→ HANDED_OVER
 | ------------------- | --------------- | ---------------------------------------------------------------------------------- |
 | `menu-fn`           | Customer        | メニュー取得                                                                             |
 | `cart-fn`           | Customer        | カート操作                                                                              |
-| `order-fn`          | Customer        | 注文確定・キャンセル                                                                         |
-| `status-fn`         | Customer        | ステータスポーリング・キュー位置                                                                   |
-| `store-fn`          | Staff           | 注文一覧・ステータス更新                                                                       |
-| `machine-router-fn` | 内部（EventBridge） | ゾーン A〜D への SQS 振り分け                                                                |
-| `zone-consumer-fn`  | 内部（SQS FIFO）    | 4 ゾーンの SQS FIFO を単一 Lambda で消費し、受付順（キュー位置）と ETA 基準を DynamoDB に確定。`CANCELLED` はスキップ |
+| `order-fn`          | Customer        | 注文確定（全明細を一括作成）・キャンセル                                                               |
+| `status-fn`         | Customer        | ステータスポーリング・キュー位置（明細単位で算出）                                                          |
+| `store-fn`          | Staff           | ゾーン別明細一覧・明細ステータス更新・注文一括受渡                                                          |
+| `machine-router-fn` | 内部（EventBridge） | 明細ごとにゾーン A〜D への SQS 振り分け                                                           |
+| `zone-consumer-fn`  | 内部（SQS FIFO）    | 4 ゾーンの SQS FIFO を単一 Lambda で消費し、明細ごとの受付順（`queueSeq`）を確定。`CANCELLED` はスキップ            |
+| `order-aggregator-fn` | 内部（DynamoDB Streams直接） | 明細から注文の導出ステータスを再計算し、ゾーン別ETA基準を更新。状態変化イベントを発行                              |
 | `connect-fn`        | WebSocket       | 接続時の connectionId 保存                                                               |
 | `disconnect-fn`     | WebSocket       | 切断時の connectionId 削除                                                               |
 | `push-fn`           | 内部（EventBridge） | 顧客・スタッフへの WebSocket push                                                           |
@@ -465,22 +467,28 @@ WAITING ──→ PREPARING ──→ READY ──→ HANDED_OVER
 
 **テーブル名**: `MobileOrderTable`（論理名。CDK が生成する物理名を環境変数で Lambda に注入）
 
-主要アクセスパターン:
+注文は「注文ヘッダ（META）」と「明細（LINE、商品1品目ごと）」に分けて持つ（§6の明細単位モデルに対応）。詳細なキー設計・具体例は `architecture.md` §6 を正とする。
+
+主要アクセスパターン（概要）:
 
 
-| #   | パターン          | キー                                                      |
-| --- | ------------- | ------------------------------------------------------- |
-| AP1 | カテゴリ別メニュー一覧   | PK=`CAT#<category>`, SK prefix=`PROD#`                  |
-| AP2 | 商品詳細          | PK=`CAT#<category>`, SK=`PROD#<productId>`              |
-| AP3 | カート取得         | PK=`CART#<sessionId>`, SK prefix=`ITEM#`                |
-| AP4 | カート明細 CRUD    | PK=`CART#<sessionId>`, SK=`ITEM#<productId>#<variant>`  |
-| AP5 | 注文ヘッダ＋明細取得    | PK=`ORDER#<orderId>`                                    |
-| AP6 | 注文ステータスポーリング  | PK=`ORDER#<orderId>`, SK=`META`                         |
-| AP7 | 店舗：ステータス別注文一覧 | GSI1PK=`STORE#<storeId>#<status>`, GSI1SK=`<createdAt>` |
-| AP8 | ステータス更新       | PK=`ORDER#<orderId>`, SK=`META`                         |
+| #   | パターン            | キー                                                      |
+| --- | --------------- | ------------------------------------------------------- |
+| AP1 | カテゴリ別メニュー一覧     | PK=`CAT#<category>`, SK prefix=`PROD#`                  |
+| AP2 | 商品詳細            | PK=`CAT#<category>`, SK=`PROD#<productId>`              |
+| AP3 | カート取得           | PK=`CART#<sessionId>`, SK prefix=`ITEM#`                |
+| AP4 | カート明細 CRUD      | PK=`CART#<sessionId>`, SK=`ITEM#<productId>#<variant>`  |
+| AP5 | 注文ヘッダ＋全明細取得     | PK=`ORDER#<orderId>`（SK 全件 Query）                       |
+| AP6 | 注文ステータス（導出）ポーリング | PK=`ORDER#<orderId>`（全LINE + META を読み、§6.2 のルールで導出）     |
+| AP7 | 店舗：導出ステータス別注文一覧 | GSI1PK=`STORE#<storeId>#<derivedStatus>`, GSI1SK=`<createdAt>` |
+| AP8 | 明細ステータス更新       | PK=`ORDER#<orderId>`, SK=`LINE#<lineId>`                |
+| AP-Z1 | 店舗：ゾーン別明細製造キュー一覧 | GSI2PK=`ZONE#<storeId>#<zone>`, GSI2SK=`<queueSeq>`   |
+| AP-Z2 | キュー位置（前方件数カウント） | GSI2PK=`ZONE#<storeId>#<zone>`, `queueSeq < :myseq` の COUNT |
+| AP-Z3 | ゾーン別受付順の採番      | PK=`ZONESEQ#<storeId>#<zone>`（原子的インクリメント）              |
+| AP-Z4 | ゾーン別ETA基準の参照/更新  | PK=`ZONESTAT#<storeId>#<zone>`                          |
 
 
-GSI は **GSI1 のみ**。追加インデックスなし。
+GSI は **GSI1（注文の導出ステータス別一覧）+ GSI2（ゾーン別製造キュー、WAITING/PREPARINGのみ保持するスパースインデックス）の2本**。
 
 **ConnectionTable**（WebSocket 用）:
 
@@ -628,7 +636,7 @@ MVP では「商品選択（メニュー・カート）→ 注文 → `STORE_ACC
 
 | スタック              | 内容                                                    |
 | ----------------- | ----------------------------------------------------- |
-| `stateful-stack`  | DynamoDBテーブル（GSI1、PITR有効）、`removalPolicy=RETAIN`、終了保護 |
+| `stateful-stack`  | DynamoDBテーブル（GSI1+GSI2、PITR有効）、`removalPolicy=RETAIN`、終了保護 |
 | `stateless-stack` | Lambda、API Gateway、IAM(grants)、CloudWatch             |
 | `frontend-stack`  | S3（非公開）+ CloudFront（OAC）                              |
 
