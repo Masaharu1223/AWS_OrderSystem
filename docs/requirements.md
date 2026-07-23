@@ -41,7 +41,7 @@
 - **グリーンフィールド（１から作る新規開発）**: 既存資産への依存なし。新規リポジトリ `mobile-order-app` で一から構築
 - **アーキテクチャ方針**: AWS サーバーレス（Lambda / DynamoDB / API Gateway）で構築。Well-Architected に準拠した設計。
 - **コスト方針**: アイドル時ほぼゼロのサーバーレス従量課金。月数百円以内を目標
-- **技術スタック**: フロントエンド（Next.js + PWA）/ バックエンド（Go Lambda）/ インフラ（AWS CDK TypeScript）
+- **技術スタック**: フロントエンド（Next.js + PWA）/ バックエンド（Python Lambda）/ インフラ（AWS CDK TypeScript）
 
 ---
 
