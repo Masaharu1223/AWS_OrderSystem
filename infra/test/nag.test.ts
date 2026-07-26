@@ -13,18 +13,30 @@ function buildStacks() {
   cdk.Aspects.of(stateful).add(new AwsSolutionsChecks());
   cdk.Aspects.of(appStack).add(new AwsSolutionsChecks());
 
+  const appPath = appStack.node.path;
+
   // Lambda基本実行ロール(AWSLambdaBasicExecutionRole)はCDKの既定付与。
-  // X-Ray書き込み(xray:PutTraceSegments等)はAWS仕様上リソースレベル権限に対応しておらず
-  // Resource:"*"が必須。dynamodb.Table.grantReadData()が生成する"<tableArn>/index/*"は
-  // テーブル本体+GSIへの読み取りのみにスコープされた想定内パターン。
-  NagSuppressions.addResourceSuppressions(
+  // MenuFnのServiceRoleのみに限定し、将来追加される他リソースのIAM4違反は隠さない。
+  NagSuppressions.addResourceSuppressionsByPath(
     appStack,
+    `${appPath}/MenuFn/ServiceRole/Resource`,
     [
       {
         id: 'AwsSolutions-IAM4',
         reason: 'AWSLambdaBasicExecutionRoleはCDKが自動付与する既定の管理ポリシー。',
         appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
       },
+    ],
+  );
+
+  // X-Ray書き込み(xray:PutTraceSegments等)はAWS仕様上リソースレベル権限に対応しておらず
+  // Resource:"*"が必須。dynamodb.Table.grantReadData()が生成する"<tableArn>/index/*"は
+  // テーブル本体+GSIへの読み取りのみにスコープされた想定内パターン。
+  // MenuFnのDefaultPolicyのみに限定する。
+  NagSuppressions.addResourceSuppressionsByPath(
+    appStack,
+    `${appPath}/MenuFn/ServiceRole/DefaultPolicy/Resource`,
+    [
       {
         id: 'AwsSolutions-IAM5',
         reason:
@@ -35,22 +47,48 @@ function buildStacks() {
           { regex: '/\\/index\\/\\*$/' },
         ],
       },
+    ],
+  );
+
+  // ランタイムバージョン固定はMenuFn自体のみに限定。
+  NagSuppressions.addResourceSuppressionsByPath(
+    appStack,
+    `${appPath}/MenuFn/Resource`,
+    [
       {
         id: 'AwsSolutions-L1',
         reason:
           'Powertools Lambda Layer(AWSLambdaPowertoolsPythonV3-Arm64)がPython3.12ビルドのため、'
           + 'ランタイムをPython3.12に意図的に固定している。Layer側の対応バージョン更新と合わせて上げる。',
       },
+    ],
+  );
+
+  // アクセスログ未設定はDefaultStageのみに限定。
+  NagSuppressions.addResourceSuppressionsByPath(
+    appStack,
+    `${appPath}/DefaultStage/Resource`,
+    [
       {
         id: 'AwsSolutions-APIG1',
         reason: 'menu-fn疎通確認用の最小スライス。アクセスログは運用整備フェーズで有効化する。',
       },
+    ],
+  );
+
+  // 認証なしはmenu-fnの2ルートのみに限定。将来追加する未認証ルートのAPIG4違反は隠さない。
+  NagSuppressions.addResourceSuppressionsByPath(
+    appStack,
+    [
+      `${appPath}/HttpApi/GET--menu/Resource`,
+      `${appPath}/HttpApi/GET--menu--{productId}/Resource`,
+    ],
+    [
       {
         id: 'AwsSolutions-APIG4',
         reason: 'menu-fnは認証不要の公開エンドポイント（要件定義上、顧客向けメニュー取得APIは認証なし）。',
       },
     ],
-    true,
   );
 
   return { stateful, appStack };

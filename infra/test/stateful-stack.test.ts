@@ -10,9 +10,9 @@ describe('StatefulStack', () => {
   });
   const template = Template.fromStack(stack);
 
-  test('MobileOrderTableがPK/SK・課金モード・ストリーム・PITRを正しく設定している', () => {
+  test('MobileOrderTableがPK/SK・課金モード・ストリーム・PITRを正しく設定している（物理名は固定しない）', () => {
     template.hasResourceProperties('AWS::DynamoDB::Table', {
-      TableName: 'MobileOrder-dev-Table',
+      TableName: Match.absent(),
       KeySchema: [
         { AttributeName: 'PK', KeyType: 'HASH' },
         { AttributeName: 'SK', KeyType: 'RANGE' },
@@ -21,6 +21,10 @@ describe('StatefulStack', () => {
       StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });
+  });
+
+  test('スタック自体のCFN終了保護が有効', () => {
+    expect(stack.terminationProtection).toBe(true);
   });
 
   test('GSI1・GSI2が正しいキースキーマで定義されている（GSI2SKはNumber型）', () => {

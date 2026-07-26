@@ -58,4 +58,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             },
         )
 
-    return _json_response(404, {"error": {"code": "NOT_FOUND", "message": "route not found", "requestId": ""}})
+    return _json_response(
+        404,
+        {
+            "error": {
+                "code": "NOT_FOUND",
+                "message": "route not found",
+                "requestId": getattr(context, "aws_request_id", ""),
+            }
+        },
+    )

@@ -12,10 +12,15 @@ export class StatefulStack extends cdk.Stack {
   public readonly table: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: StageStackProps) {
-    super(scope, id, props);
+    // ステートフルなリソース（DynamoDBテーブル本体）を持つスタックのため、
+    // 誤った`cdk destroy`/スタック削除操作からの保護としてCFN終了保護を有効化する。
+    super(scope, id, { ...props, terminationProtection: true });
 
     this.table = new dynamodb.Table(this, 'MobileOrderTable', {
-      tableName: `MobileOrder-${props.stage}-Table`,
+      // 物理名は明示せずCDK/CFNに自動生成させる（論理名`MobileOrderTable`が正、
+      // 物理名はLambdaへ環境変数`TABLE_NAME`として注入する契約 — docs/requirements.md §11.3）。
+      // 明示的な物理名固定は、置換が必要なプロパティ変更時にCFNが新旧リソースを
+      // 同時存在させられず更新に失敗する原因になるため避ける。
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,

@@ -27,6 +27,15 @@ export class AppStack extends cdk.Stack {
 
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: `MobileOrder-${props.stage}-http-api`,
+      // デフォルトステージをスロットル設定付きで自前定義するため、自動作成を無効化する。
+      createDefaultStage: false,
+    });
+
+    // 公開エンドポイント（認証なし）にバースト/レート上限を設定し、過負荷・濫用を防ぐ。
+    new apigwv2.HttpStage(this, 'DefaultStage', {
+      httpApi,
+      autoDeploy: true,
+      throttle: { rateLimit: 50, burstLimit: 100 },
     });
 
     const menuIntegration = new integrations.HttpLambdaIntegration('MenuIntegration', menuFn);
