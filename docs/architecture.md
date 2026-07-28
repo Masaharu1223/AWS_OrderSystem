@@ -185,6 +185,7 @@ def add_item(in_: AddItemInput) -> Cart: ...
 
 | 種別 | PK | SK | 主な属性 |
 |---|---|---|---|
+| 商品（Product） | `MENU`（固定） | `PROD#<productId>` | category, name, basePrice, sizeDelta, allowHot, allowIced, available, displayOrder（任意） |
 | 注文ヘッダ（META） | `ORDER#<orderId>` | `META` | orderNumber, storeId, derivedStatus, totalPrice, lineCount, createdAt, updatedAt, GSI1PK, GSI1SK |
 | 明細（LINE） | `ORDER#<orderId>` | `LINE#<lineId>` | productId, name, category, variant, quantity, unitPrice, zone, status, queueSeq, preparedAt, readyAt, createdAt, updatedAt, GSI2PK, GSI2SK |
 | ゾーン採番カウンタ | `ZONESEQ#<storeId>#<zone>` | `COUNTER` | seq（Number） |
@@ -193,6 +194,8 @@ def add_item(in_: AddItemInput) -> Cart: ...
 | 接続（別テーブル） | `connectionId`（ConnectionTable） | `orderId` / `ZONE#<zone>` | TTL 2h（§8参照） |
 
 **明細の粒度**: 1 LINE = カート1行（`productId` + `variant`）とし、`quantity` を LINE に保持する（同一商品を1個ずつ複数明細に分割しない）。ゾーンは `category + size` から一意に決まり `quantity` に依存しないため、1 LINE は必ず1ゾーンに写像される。スワイプ操作（requirements.md §5.3）も LINE 単位で1回。
+
+**商品（Product）のキー設計**: 商品点数が少ない前提のため、`category` ごとにパーティションを分けず全商品を `PK=MENU`（固定）の単一パーティションに集約する。`GET /menu`（§7.1）は `Query PK=MENU` で全件取得し in-memory で `category` 属性によりグループ化して返す。`GET /menu/{productId}` は `GetItem PK=MENU, SK=PROD#<productId>` で単体取得する（O(1)、category をパスに含めない）。
 
 `lineId` は注文内でカート順に採番したゼロ埋め連番（`001`, `002`, …）。安定・一意で、SQS の `MessageDeduplicationId`（`<orderId>#<lineId>`）にも流用する。
 
