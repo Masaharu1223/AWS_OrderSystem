@@ -526,8 +526,8 @@ flowchart LR
 
 | #   | パターン            | キー                                                      |
 | --- | --------------- | ------------------------------------------------------- |
-| AP1 | カテゴリ別メニュー一覧     | PK=`CAT#<category>`, SK prefix=`PROD#`                  |
-| AP2 | 商品詳細            | PK=`CAT#<category>`, SK=`PROD#<productId>`              |
+| AP1 | カテゴリ別メニュー一覧     | PK=`MENU`（固定）, SK prefix=`PROD#`                       |
+| AP2 | 商品詳細            | PK=`MENU`（固定）, SK=`PROD#<productId>`                   |
 | AP3 | カート取得           | PK=`CART#<sessionId>`, SK prefix=`ITEM#`                |
 | AP4 | カート明細 CRUD      | PK=`CART#<sessionId>`, SK=`ITEM#<productId>#<variant>`  |
 | AP5 | 注文ヘッダ＋全明細取得     | PK=`ORDER#<orderId>`（SK 全件 Query）                       |
@@ -539,6 +539,7 @@ flowchart LR
 | AP-Z3 | ゾーン別受付順の採番      | PK=`ZONESEQ#<storeId>#<zone>`（原子的インクリメント）              |
 | AP-Z4 | ゾーン別ETA基準の参照/更新  | PK=`ZONESTAT#<storeId>#<zone>`                          |
 
+> AP1/AP2 は商品点数が少ない前提のため、`category`ごとにパーティションを分けず**全商品をPK=`MENU`固定の単一パーティションに集約**する。AP1（`GET /menu`）は`Query PK=MENU`で全件取得後、in-memoryで`category`属性によりグループ化して返す。AP2（`GET /menu/{productId}`）は`GetItem PK=MENU, SK=PROD#<productId>`で単体取得する（O(1)、`category`をパスに含めなくてよい。§11.1の補足参照）。追加のGSIは不要。
 
 GSI は **GSI1（注文の導出ステータス別一覧）+ GSI2（ゾーン別製造キュー、WAITING/PREPARINGのみ保持するスパースインデックス）の2本**。
 
