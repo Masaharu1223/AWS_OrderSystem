@@ -1,0 +1,52 @@
+[project]
+name = "mobile-order-services"
+version = "0.1.0"
+description = "mobile-order-app Lambda backend (Python)"
+requires-python = ">=3.12"
+# 実行時にimportするライブラリ(ローカルでのスクリプト実行・テスト実行に必要)。
+# Lambda本体はCDKが付与するPowertools Lambda Layerからこれらを供給するため、
+# デプロイZip(services/src)自体にはバンドルしない。
+dependencies = [
+    "boto3",
+    "aws-lambda-powertools",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+# lint/型チェック/テストにのみ必要なツール群。
+dev = [
+    "pytest",
+    "moto[dynamodb]",
+    "mypy",
+    "ruff",
+    "boto3-stubs[dynamodb]",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# services/src はそのままLambdaのZipルートになる構造(単一パッケージ名を持たない)。
+# pip配布物としては公開せず、依存関係・ツール設定の管理にのみpyproject.tomlを使う。
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# services/src をimportパスに追加する(pytest 7+標準機能)。
+# 実運用のLambda Zip構造(services/src直下がそのままルート)とimport解決を一致させる。
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+ignore_missing_imports = true
+disallow_untyped_defs = false
