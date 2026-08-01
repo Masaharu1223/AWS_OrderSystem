@@ -16,10 +16,13 @@ function buildStacks() {
   const appPath = appStack.node.path;
 
   // Lambda基本実行ロール(AWSLambdaBasicExecutionRole)はCDKの既定付与。
-  // MenuFnのServiceRoleのみに限定し、将来追加される他リソースのIAM4違反は隠さない。
+  // Menu/CartFnのServiceRoleのみに限定し、将来追加される他リソースのIAM4違反は隠さない。
   NagSuppressions.addResourceSuppressionsByPath(
     appStack,
-    `${appPath}/MenuFn/ServiceRole/Resource`,
+    [
+      `${appPath}/MenuFn/ServiceRole/Resource`,
+      `${appPath}/CartFn/ServiceRole/Resource`,
+    ],
     [
       {
         id: 'AwsSolutions-IAM4',
@@ -30,18 +33,21 @@ function buildStacks() {
   );
 
   // X-Ray書き込み(xray:PutTraceSegments等)はAWS仕様上リソースレベル権限に対応しておらず
-  // Resource:"*"が必須。dynamodb.Table.grantReadData()が生成する"<tableArn>/index/*"は
-  // テーブル本体+GSIへの読み取りのみにスコープされた想定内パターン。
-  // MenuFnのDefaultPolicyのみに限定する。
+  // Resource:"*"が必須。dynamodb.Table.grantReadData()/grantReadWriteData()が生成する
+  // "<tableArn>/index/*"はテーブル本体+GSIへのアクセスのみにスコープされた想定内パターン。
+  // Menu/CartFnのDefaultPolicyのみに限定する。
   NagSuppressions.addResourceSuppressionsByPath(
     appStack,
-    `${appPath}/MenuFn/ServiceRole/DefaultPolicy/Resource`,
+    [
+      `${appPath}/MenuFn/ServiceRole/DefaultPolicy/Resource`,
+      `${appPath}/CartFn/ServiceRole/DefaultPolicy/Resource`,
+    ],
     [
       {
         id: 'AwsSolutions-IAM5',
         reason:
           'X-Ray書き込み(xray:PutTraceSegments/PutTelemetryRecords)はAWS仕様上Resource:"*"が必須。'
-          + 'DynamoDB読み取りはgrantReadData()が生成する<tableArn>/index/*のみにスコープ済み。',
+          + 'DynamoDBアクセスはgrantReadData()/grantReadWriteData()が生成する<tableArn>/index/*のみにスコープ済み。',
         appliesTo: [
           'Resource::*',
           { regex: '/\\/index\\/\\*$/' },
@@ -50,10 +56,13 @@ function buildStacks() {
     ],
   );
 
-  // ランタイムバージョン固定はMenuFn自体のみに限定。
+  // ランタイムバージョン固定はMenu/CartFn自体のみに限定。
   NagSuppressions.addResourceSuppressionsByPath(
     appStack,
-    `${appPath}/MenuFn/Resource`,
+    [
+      `${appPath}/MenuFn/Resource`,
+      `${appPath}/CartFn/Resource`,
+    ],
     [
       {
         id: 'AwsSolutions-L1',
@@ -71,22 +80,28 @@ function buildStacks() {
     [
       {
         id: 'AwsSolutions-APIG1',
-        reason: 'menu-fn疎通確認用の最小スライス。アクセスログは運用整備フェーズで有効化する。',
+        reason: 'menu-fn/cart-fn疎通確認用の最小スライス。アクセスログは運用整備フェーズで有効化する。',
       },
     ],
   );
 
-  // 認証なしはmenu-fnの2ルートのみに限定。将来追加する未認証ルートのAPIG4違反は隠さない。
+  // 認証なしはmenu-fn(2ルート)・cart-fn(4ルート)のみに限定。将来追加する未認証ルートのAPIG4違反は隠さない。
   NagSuppressions.addResourceSuppressionsByPath(
     appStack,
     [
       `${appPath}/HttpApi/GET--menu/Resource`,
       `${appPath}/HttpApi/GET--menu--{productId}/Resource`,
+      `${appPath}/HttpApi/GET--cart--{sessionId}/Resource`,
+      `${appPath}/HttpApi/POST--cart--{sessionId}--items/Resource`,
+      `${appPath}/HttpApi/PUT--cart--{sessionId}--items--{itemId}/Resource`,
+      `${appPath}/HttpApi/DELETE--cart--{sessionId}--items--{itemId}/Resource`,
     ],
     [
       {
         id: 'AwsSolutions-APIG4',
-        reason: 'menu-fnは認証不要の公開エンドポイント（要件定義上、顧客向けメニュー取得APIは認証なし）。',
+        reason:
+          'menu-fn/cart-fnは認証不要の公開エンドポイント（要件定義上、顧客向けメニュー・カート操作APIは'
+          + 'sessionIdのみで識別しCognito認証を要求しない、MVPの既定方針）。',
       },
     ],
   );

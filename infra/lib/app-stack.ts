@@ -11,8 +11,8 @@ export interface AppStackProps extends StageStackProps {
 }
 
 /**
- * スライス①（menu-fn）のみを配線した最小版app-stack。
- * cart/order/status/store/WebSocket/SQS/EventBridge/Cognito/ConnectionTable/payment-fnは対象外。
+ * スライス①（menu-fn）＋スライス②（cart-fn）を配線したapp-stack。
+ * order/status/store/WebSocket/SQS/EventBridge/Cognito/ConnectionTable/payment-fnは対象外。
  */
 export class AppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: AppStackProps) {
@@ -24,6 +24,14 @@ export class AppStack extends cdk.Stack {
       environment: { TABLE_NAME: props.table.tableName },
     });
     props.table.grantReadData(menuFn);
+
+    const cartFn = new PythonLambdaFunction(this, 'CartFn', {
+      functionName: `MobileOrder-${props.stage}-cart-fn`,
+      handler: 'handlers.cart.handler',
+      environment: { TABLE_NAME: props.table.tableName },
+    });
+    // cart-fnはCART行の読み書きに加え、商品検証のためMENU行の読み取りも行う(単一テーブル設計)。
+    props.table.grantReadWriteData(cartFn);
 
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: `MobileOrder-${props.stage}-http-api`,
@@ -48,6 +56,28 @@ export class AppStack extends cdk.Stack {
       path: '/menu/{productId}',
       methods: [apigwv2.HttpMethod.GET],
       integration: menuIntegration,
+    });
+
+    const cartIntegration = new integrations.HttpLambdaIntegration('CartIntegration', cartFn);
+    httpApi.addRoutes({
+      path: '/cart/{sessionId}',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: cartIntegration,
+    });
+    httpApi.addRoutes({
+      path: '/cart/{sessionId}/items',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: cartIntegration,
+    });
+    httpApi.addRoutes({
+      path: '/cart/{sessionId}/items/{itemId}',
+      methods: [apigwv2.HttpMethod.PUT],
+      integration: cartIntegration,
+    });
+    httpApi.addRoutes({
+      path: '/cart/{sessionId}/items/{itemId}',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: cartIntegration,
     });
 
     new cdk.CfnOutput(this, 'HttpApiUrl', {

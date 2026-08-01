@@ -28,6 +28,9 @@ export class StatefulStack extends cdk.Stack {
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       deletionProtection: true,
+      // テーブル全体で共有する単一のTTL属性(docs/architecture.md §6.1)。
+      // cart-fnのカート明細が最初に使い、将来IDEMPOTENCY/ORDERNUMも同じ属性名に載せる。
+      timeToLiveAttribute: 'expiresAt',
     });
 
     // GSI1: 店舗のステータス別注文一覧
