@@ -23,6 +23,12 @@ describe('StatefulStack', () => {
     });
   });
 
+  test('TTL属性がexpiresAtで有効化されている（テーブル全体で単一のTTL属性を共有）', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+    });
+  });
+
   test('スタック自体のCFN終了保護が有効', () => {
     expect(stack.terminationProtection).toBe(true);
   });

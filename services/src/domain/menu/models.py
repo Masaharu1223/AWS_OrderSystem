@@ -48,3 +48,20 @@ class Product(BaseModel):
                 f"{sorted(expected)}, got {sorted(keys)}"
             )
         return self
+
+
+# cart-fn/order-fn が注文時に選択する温度・サイズの組み合わせ(docs/architecture.md §7.2)。
+# 許可される組み合わせの判定は Product(allow_hot/allow_iced/size_delta)を単一の情報源とし、
+# ここでは別のルールを持たない(domain/menu/pricing.py 参照)。
+Temperature = Literal["hot", "iced"]
+
+
+class Variant(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    temperature: Temperature
+    size: Size
+
+    def to_key_segment(self) -> str:
+        """DynamoDBのSK/itemIdで使う `<temperature>#<size>` 形式。"""
+        return f"{self.temperature}#{self.size}"
