@@ -1,8 +1,9 @@
 # アーキテクチャ設計書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 2.1
+**バージョン**: 2.2
 **作成日**: 2026-07-02
-**最終更新**: 2026-07-31（[Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映しMVP範囲を再定義。`queueSeq`採番をSQS FIFO経由から`order-fn`内のDynamoDB原子カウンタ同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`〕へ変更。`machine-router-fn`/`zone-consumer-fn`/SQS FIFO×4/`order-aggregator-fn`/WebSocket一式をMVPスコープ外の「将来」章へ格下げ。`POST /orders/{orderId}/handover`（旧設計の名残、自動受渡システム仕様と矛盾していた）を削除し`PATCH /orders/{orderId}/lines/{lineId}/handover`に置換〔§0, §1, §2, §3, §6.1, §6.3, §7.3, §7.4, §7.5, §8, §9, §10, §11〕）
+**最終更新**: 2026-08-01（スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕）
+**2026-07-31更新**: [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映しMVP範囲を再定義。`queueSeq`採番をSQS FIFO経由から`order-fn`内のDynamoDB原子カウンタ同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`〕へ変更。`machine-router-fn`/`zone-consumer-fn`/SQS FIFO×4/`order-aggregator-fn`/WebSocket一式をMVPスコープ外の「将来」章へ格下げ。`POST /orders/{orderId}/handover`（旧設計の名残、自動受渡システム仕様と矛盾していた）を削除し`PATCH /orders/{orderId}/lines/{lineId}/handover`に置換〔§0, §1, §2, §3, §6.1, §6.3, §7.3, §7.4, §7.5, §8, §9, §10, §11〕
 **関連文書**: `requirements.md`（要件定義書 v1.8）
 **対象読者**: 実装担当（中級者想定）
 
@@ -238,6 +239,7 @@ def add_item(in_: AddItemInput) -> Cart: ...
 | 種別 | PK | SK | 主な属性 |
 |---|---|---|---|
 | 商品（Product） | `MENU`（固定） | `PROD#<productId>` | category, name, basePrice, sizeDelta, allowHot, allowIced, available, displayOrder（任意） |
+| カート明細（ITEM、新設v2.2） | `CART#<sessionId>` | `ITEM#<productId>#<temperature>#<size>` | productId, category, name, variant, quantity, unitPrice, addedAt, updatedAt, **expiresAt**（TTL）。`unitPrice`は追加/変更時点でのスナップショット（write-time計算）。`itemId`・`lineTotal`は保存せず、それぞれSKと`quantity×unitPrice`から都度導出する |
 | 注文ヘッダ（META） | `ORDER#<orderId>` | `META` | orderNumber, storeId, derivedStatus, totalPrice, lineCount, createdAt, updatedAt, GSI1PK, GSI1SK |
 | 明細（LINE） | `ORDER#<orderId>` | `LINE#<lineId>` | productId, name, category, variant, quantity, unitPrice, zone, status, queueSeq, preparedAt, readyAt, createdAt, updatedAt, GSI2PK, GSI2SK。**v2.1: zone/queueSeq/GSI2PK/GSI2SKは`order-fn`の作成トランザクション内で確定済みの値として書き込まれる（§6.3・§7.3）** |
 | ゾーン採番カウンタ | `ZONESEQ#<storeId>#<zone>` | `COUNTER` | seq（Number）。永久に単調増加させ、リセットしない |
@@ -251,6 +253,8 @@ def add_item(in_: AddItemInput) -> Cart: ...
 **商品（Product）のキー設計**: 商品点数が少ない前提のため、`category` ごとにパーティションを分けず全商品を `PK=MENU`（固定）の単一パーティションに集約する。`GET /menu`（§7.1）は `Query PK=MENU` で全件取得し in-memory で `category` 属性によりグループ化して返す。`GET /menu/{productId}` は `GetItem PK=MENU, SK=PROD#<productId>` で単体取得する（O(1)、category をパスに含めない）。
 
 `lineId` は注文内でカート順に採番したゼロ埋め連番（`001`, `002`, …）。安定・一意で、SQS の `MessageDeduplicationId`（`<orderId>#<lineId>`）にも流用する。
+
+**TTL属性（新設v2.2）**: `MobileOrderTable`のTTLは`expiresAt`（Number、UNIX epoch秒）という単一の属性名をテーブル全体で共有する（DynamoDBのTTLは1テーブルにつき1属性しか設定できないため）。カート明細（ITEM）はv2.2で最初にこの属性を使う（追加/更新のたびに現在時刻+24時間へ再計算し、操作のない放置カートを自動的に消す）。将来`order-fn`を実装する際、`IDEMPOTENCY`アイテムや`ORDERNUM#`カウンタのTTLも同じ`expiresAt`属性名に載せる。DynamoDBのTTLによる実際の削除は最大48時間程度遅延しうるため、期限直後の数時間はカートがまだ読み出せる可能性がある（MVPでは実害なしとして許容し、アプリ側でのフィルタは行わない）。
 
 ### 6.2 GSI1（店舗：導出ステータス別の注文一覧）
 
@@ -350,6 +354,17 @@ DELETE /cart/{sessionId}/items/{itemId}  → 204
     "quantity": 2, "unitPrice": 500, "lineTotal": 1000 } ],
   "subtotal": 1000 }
 ```
+
+**運用ルール（新設v2.2）**:
+
+| 項目 | 仕様 |
+|---|---|
+| 数量上限 | `quantity`は1〜10（`AddItemInput`/PUTボディ双方に適用。超過は`400 VALIDATION_ERROR`）。カート全体の合計数量には上限を設けない |
+| 空カートへのGET | `CART#<sessionId>`配下に行が1件も無くても`404`にはせず、`200`＋`{"items":[],"subtotal":0}`を返す（`sessionId`はクライアント生成のUUIDのため、サーバー側に「存在するセッション」という概念がない） |
+| `quantity<=0`のPUT | `400 VALIDATION_ERROR`。個数を0にする操作は許可せず、削除は`DELETE`を使う（暗黙削除は行わない） |
+| 品切れ商品(`available:false`)の追加 | `400 VALIDATION_ERROR`で拒否する。ただし追加後に品切れになったケースは`GET`では検知しない（`unitPrice`と同じくwrite-timeスナップショット方式のため）。この場合の最終防御は`order-fn`の確定時再検証に委ねる（§7.3） |
+| バリデーション対象の`variant` | 許可される温度（`allowHot`/`allowIced`）・サイズ（`sizeDelta`のキー集合）は、商品マスタ（`Product`、§7.1）の定義をそのまま参照する。カート側で別ルールを持たない |
+| TTL | カート明細は`expiresAt`（§6.1）により追加/更新のたびに現在時刻+24時間へ延長される。放置されたカートは最終操作から24時間程度で自動的に消える |
 
 ### 7.3 order-fn
 
