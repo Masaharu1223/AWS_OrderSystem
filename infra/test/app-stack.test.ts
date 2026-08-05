@@ -52,11 +52,54 @@ describe('AppStack', () => {
     expect(cartFn.Properties.Layers).toHaveLength(1);
   });
 
-  test('Lambda関数はmenu-fn/cart-fnの2個のみ', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 2);
+  test('order-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・Powertools Layer1個を持つ', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-order-fn',
+      Runtime: 'python3.12',
+      Architectures: ['arm64'],
+      Handler: 'handlers.order.handler',
+      Environment: {
+        Variables: Match.objectLike({
+          POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-order-fn',
+        }),
+      },
+    });
+
+    const fns = template.findResources('AWS::Lambda::Function');
+    const orderFn = Object.values(fns).find(
+      (f) => (f as { Properties: { FunctionName?: string } }).Properties.FunctionName
+        === 'MobileOrder-dev-order-fn',
+    ) as { Properties: { Layers?: unknown[] } };
+    expect(orderFn.Properties.Layers).toHaveLength(1);
   });
 
-  test('HTTP APIに menu-fn 2ルート + cart-fn 4ルートが存在する', () => {
+  test('status-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・LOG_LEVEL=WARNINGを持つ', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-status-fn',
+      Runtime: 'python3.12',
+      Architectures: ['arm64'],
+      Handler: 'handlers.status.handler',
+      Environment: {
+        Variables: Match.objectLike({
+          POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-status-fn',
+          LOG_LEVEL: 'WARNING',
+        }),
+      },
+    });
+  });
+
+  test('status-fnのロググループはdevで7日保持', () => {
+    template.hasResourceProperties('AWS::Logs::LogGroup', {
+      LogGroupName: '/aws/lambda/MobileOrder-dev-status-fn',
+      RetentionInDays: 7,
+    });
+  });
+
+  test('Lambda関数はmenu-fn/cart-fn/order-fn/status-fnの4個のみ', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 4);
+  });
+
+  test('HTTP APIに menu-fn 2ルート + cart-fn 4ルート + order-fn 2ルート + status-fn 2ルートが存在する', () => {
     template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /menu' });
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
@@ -74,9 +117,34 @@ describe('AppStack', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'DELETE /cart/{sessionId}/items/{itemId}',
     });
-    template.resourceCountIs('AWS::ApiGatewayV2::Route', 6);
-    // menu-fn用1個 + cart-fn用1個(4ルートで共有)の2個
-    template.resourceCountIs('AWS::ApiGatewayV2::Integration', 2);
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'POST /orders' });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'PATCH /orders/{orderId}/cancel',
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'GET /orders/{orderId}',
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'GET /orders/{orderId}/queue-position',
+    });
+    template.resourceCountIs('AWS::ApiGatewayV2::Route', 10);
+    // menu-fn用1個 + cart-fn用1個(4ルートで共有) + order-fn用1個(2ルートで共有)
+    // + status-fn用1個(2ルートで共有)の4個
+    template.resourceCountIs('AWS::ApiGatewayV2::Integration', 4);
+  });
+
+  test('DefaultStageのRouteSettingsでポーリング系(status-fn)と書き込み系(order-fn)が別バケットに分離されている', () => {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
+      RouteSettings: {
+        'GET /orders/{orderId}': { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
+        'GET /orders/{orderId}/queue-position': {
+          ThrottlingRateLimit: 50,
+          ThrottlingBurstLimit: 100,
+        },
+        'POST /orders': { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
+        'PATCH /orders/{orderId}/cancel': { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
+      },
+    });
   });
 
   type Statement = { Action: unknown; Effect: string; Resource: unknown };
@@ -102,7 +170,12 @@ describe('AppStack', () => {
   function expectDynamoActionsMatch(statements: Statement[], allowedActionsPattern: RegExp) {
     const dynamoStatements = statements.filter((stmt) => {
       const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
-      return actions.some((a) => typeof a === 'string' && a.startsWith('dynamodb:'));
+      const isDynamoAction = actions.some((a) => typeof a === 'string' && a.startsWith('dynamodb:'));
+      // dynamodb:TransactWriteItemsはgrantReadWriteData()由来のCRUD統一パターン(テーブル本体+GSIの
+      // 2件)とは別に、テーブル本体のみにスコープした専用statementとして付与している(GSIを対象にしない
+      // ため)。ここでは対象外にし、専用のテストで別途検証する。
+      const isTransactWriteOnly = actions.length === 1 && actions[0] === 'dynamodb:TransactWriteItems';
+      return isDynamoAction && !isTransactWriteOnly;
     });
     // grant*Data()はCDKの内部最適化でアクションを複数Statementに分割することがあるため、
     // Statement数ではなく「全dynamodb系Statementの内容」を検証する。
@@ -133,6 +206,37 @@ describe('AppStack', () => {
     );
   });
 
+  test('order-fnのIAMポリシー: grantReadWriteData由来のCRUDアクションはテーブル本体+GSI(index/*)の2件だけにスコープされる', () => {
+    expectDynamoActionsMatch(
+      policyStatementsFor('MobileOrder-dev-order-fn'),
+      /^dynamodb:(BatchGetItem|BatchWriteItem|ConditionCheckItem|DeleteItem|DescribeTable|GetItem|GetRecords|GetShardIterator|PutItem|Query|Scan|UpdateItem)$/,
+    );
+  });
+
+  test('order-fnのIAMポリシー: dynamodb:TransactWriteItemsをテーブル本体のみ(GSIワイルドカードなし)の1件に個別付与している', () => {
+    const statements = policyStatementsFor('MobileOrder-dev-order-fn');
+    const transactWriteStatement = statements.find((stmt) => {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      return actions.length === 1 && actions[0] === 'dynamodb:TransactWriteItems';
+    });
+
+    expect(transactWriteStatement).toBeDefined();
+    const resources = Array.isArray(transactWriteStatement!.Resource)
+      ? transactWriteStatement!.Resource
+      : [transactWriteStatement!.Resource];
+    // TransactWriteItemsはGSIを対象にしないため、grantReadWriteData()の2件パターン(テーブル+index/*)
+    // とは異なりテーブル本体1件だけにスコープされる。
+    expect(resources).toHaveLength(1);
+    expect(JSON.stringify(resources[0])).not.toMatch(/\/index\/\*/);
+  });
+
+  test('status-fnのIAMポリシー: DynamoDB権限は読み取り専用アクションのみでテーブル本体+GSI(index/*)の2件だけにスコープされる', () => {
+    expectDynamoActionsMatch(
+      policyStatementsFor('MobileOrder-dev-status-fn'),
+      /^dynamodb:(BatchGetItem|ConditionCheckItem|DescribeTable|GetItem|GetRecords|GetShardIterator|Query|Scan)$/,
+    );
+  });
+
   test('X-Ray書き込み以外、どのIAMポリシーもResource="*"を持たない', () => {
     const policies = template.findResources('AWS::IAM::Policy');
     const allStatements = Object.values(policies).flatMap(
@@ -154,7 +258,7 @@ describe('AppStack', () => {
     }
   });
 
-  test('order/status/store/WebSocket/SQS/EventBridge/Cognitoはこのスライスでは作られない', () => {
+  test('store/WebSocket/SQS/EventBridge/Cognitoはこのスライスでは作られない', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 0);
     template.resourceCountIs('AWS::SQS::Queue', 0);
     template.resourceCountIs('AWS::Events::Rule', 0);
