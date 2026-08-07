@@ -303,7 +303,7 @@ def test_update_quantity_returns_400_when_item_id_malformed(
 
 
 @mock_aws
-def test_delete_item_returns_204_and_removes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_delete_item_returns_200_with_updated_cart(monkeypatch: pytest.MonkeyPatch) -> None:
     _create_table()
     _put_product(**_LATTE)
     cart_handler = _reload_handler(monkeypatch)
@@ -317,14 +317,39 @@ def test_delete_item_returns_204_and_removes_it(monkeypatch: pytest.MonkeyPatch)
         _CONTEXT,
     )
 
-    assert response["statusCode"] == 204
-    assert response["body"] == ""
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body == {"sessionId": _SESSION_ID, "items": [], "subtotal": 0}
 
-    follow_up = cart_handler.handler(
-        {"routeKey": "GET /cart/{sessionId}", "pathParameters": {"sessionId": _SESSION_ID}},
+
+@mock_aws
+def test_delete_item_returns_remaining_items_and_recalculated_subtotal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_product(**_LATTE)
+    _put_product(**_CAPPUCCINO_NO_ICE)
+    cart_handler = _reload_handler(monkeypatch)
+    cart_handler.handler(_add_item_event(product_id="prod-001", quantity=2), _CONTEXT)
+    cart_handler.handler(
+        _add_item_event(
+            product_id="prod-002", category="espresso", temperature="hot", quantity=1
+        ),
         _CONTEXT,
     )
-    assert json.loads(follow_up["body"])["items"] == []
+
+    response = cart_handler.handler(
+        {
+            "routeKey": "DELETE /cart/{sessionId}/items/{itemId}",
+            "pathParameters": {"sessionId": _SESSION_ID, "itemId": "prod-001#iced#M"},
+        },
+        _CONTEXT,
+    )
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert [item["itemId"] for item in body["items"]] == ["prod-002#hot#M"]
+    assert body["subtotal"] == 480  # 430 + 50 (M)
 
 
 @mock_aws
