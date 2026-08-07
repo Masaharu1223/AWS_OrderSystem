@@ -1,8 +1,9 @@
 # アーキテクチャ設計書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 2.2
+**バージョン**: 2.3
 **作成日**: 2026-07-02
-**最終更新**: 2026-08-01（スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕）
+**最終更新**: 2026-08-07（顧客向けフロント実装の前提整備として、`DELETE /cart/{sessionId}/items/{itemId}`の応答契約を`204`から`200 Cart`に変更。`POST`/`PUT`と同様に更新後のカート全体を返すことで、クライアント側が削除後に再GETする必要をなくし、3種のミューテーションAPI全てで契約を統一した〔§7.2〕）
+**2026-08-01更新**: スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕
 **2026-07-31更新**: [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映しMVP範囲を再定義。`queueSeq`採番をSQS FIFO経由から`order-fn`内のDynamoDB原子カウンタ同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`〕へ変更。`machine-router-fn`/`zone-consumer-fn`/SQS FIFO×4/`order-aggregator-fn`/WebSocket一式をMVPスコープ外の「将来」章へ格下げ。`POST /orders/{orderId}/handover`（旧設計の名残、自動受渡システム仕様と矛盾していた）を削除し`PATCH /orders/{orderId}/lines/{lineId}/handover`に置換〔§0, §1, §2, §3, §6.1, §6.3, §7.3, §7.4, §7.5, §8, §9, §10, §11〕
 **関連文書**: `requirements.md`（要件定義書 v1.8）
 **対象読者**: 実装担当（中級者想定）
@@ -339,7 +340,7 @@ GET /menu/{productId}   → 200 Product | 404
 GET    /cart/{sessionId}                 → 200 Cart
 POST   /cart/{sessionId}/items           → 201 Cart      body: AddItemInput
 PUT    /cart/{sessionId}/items/{itemId}  → 200 Cart      body: { "quantity": 3 }
-DELETE /cart/{sessionId}/items/{itemId}  → 204
+DELETE /cart/{sessionId}/items/{itemId}  → 200 Cart
 ```
 
 ```json

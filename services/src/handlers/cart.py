@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from adapters.cart_repository import CartRepository
 from adapters.errors import build_error, not_found
-from adapters.http import empty_response, json_response
+from adapters.http import json_response
 from adapters.menu_repository import MenuRepository
 from config import get_config
 from domain.cart.models import AddItemInput, Cart, UpdateQuantityInput, parse_item_id
@@ -137,4 +137,5 @@ def _handle_delete_item(event: dict[str, Any], request_id: str) -> dict[str, Any
         status, body = not_found(f"item {item_id} not found", request_id)
         return json_response(status, body)
 
-    return empty_response(204)
+    cart = Cart(session_id=session_id, items=_cart_repository.list_items(session_id))
+    return json_response(200, cart.model_dump(by_alias=True))
