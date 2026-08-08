@@ -1,8 +1,9 @@
 # アーキテクチャ設計書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 2.3
+**バージョン**: 2.4
 **作成日**: 2026-07-02
-**最終更新**: 2026-08-07（顧客向けフロント実装の前提整備として、`DELETE /cart/{sessionId}/items/{itemId}`の応答契約を`204`から`200 Cart`に変更。`POST`/`PUT`と同様に更新後のカート全体を返すことで、クライアント側が削除後に再GETする必要をなくし、3種のミューテーションAPI全てで契約を統一した〔§7.2〕）
+**最終更新**: 2026-08-08（顧客向けフロントを`frontend-stack`（S3+CloudFront）でホスティングする前提から、Next.jsの静的エクスポート採用を確定。§1.3を新設し、CORS必須化・`/order?id=`クエリパラメータ方式・`sessionId`のlocalStorage管理という3つの設計上の影響を明記した〔§1.3〕）
+**2026-08-07更新**: 顧客向けフロント実装の前提整備として、`DELETE /cart/{sessionId}/items/{itemId}`の応答契約を`204`から`200 Cart`に変更。`POST`/`PUT`と同様に更新後のカート全体を返すことで、クライアント側が削除後に再GETする必要をなくし、3種のミューテーションAPI全てで契約を統一した〔§7.2〕
 **2026-08-01更新**: スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕
 **2026-07-31更新**: [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映しMVP範囲を再定義。`queueSeq`採番をSQS FIFO経由から`order-fn`内のDynamoDB原子カウンタ同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`〕へ変更。`machine-router-fn`/`zone-consumer-fn`/SQS FIFO×4/`order-aggregator-fn`/WebSocket一式をMVPスコープ外の「将来」章へ格下げ。`POST /orders/{orderId}/handover`（旧設計の名残、自動受渡システム仕様と矛盾していた）を削除し`PATCH /orders/{orderId}/lines/{lineId}/handover`に置換〔§0, §1, §2, §3, §6.1, §6.3, §7.3, §7.4, §7.5, §8, §9, §10, §11〕
 **関連文書**: `requirements.md`（要件定義書 v1.8）
@@ -125,6 +126,24 @@ flowchart TB
 ```
 
 > 将来版は§8・§9で詳細を維持している。**注意**: 将来版のSQS/zone-consumer-fnによる`queueSeq`採番は旧設計であり、v2.1で`order-fn`同期採番に置き換わった（§0原則3）。再導入する場合は「確定済みの`queueSeq`をStreams経由でSQSへ流す」形に設計し直す必要がある（requirements.md §14.12）。
+
+### 1.3 フロントエンド配信方式（v2.4で追加）
+
+`web/`（顧客向けNext.js PWA）は`frontend-stack`（S3非公開+CloudFront/OAC、tasks/todo.md §1⑦）でホスティングする。S3はNode.jsランタイムを持たない静的ファイル配信のみのため、Next.jsは`output: 'export'`（静的エクスポート）でビルドすることをここで確定する。静的エクスポートは以下の機能を使用不可にする（`next build`ではなく`next dev`の時点でエラーになる。UIを書き進める前に前提を固定するほど手戻りが少ない）:
+
+- `cookies()` / `headers()`などのRequest-time API
+- Server Actions
+- `generateStaticParams()`の無い動的ルート
+- Rewrites / Redirects / Headers / Proxy
+- ISR（Incremental Static Regeneration）
+
+**影響1: CORSが必須**。ブラウザから直接API Gateway（`HttpApi`）を叩くため、`infra/lib/app-stack.ts`の`HttpApi`に`corsPreflight`を設定する（`allowOrigins`はCloudFrontドメイン+ローカル開発用オリジン、`allowHeaders`に`Idempotency-Key`を含める。§7系の各Lambda契約自体は変更なし）。
+
+**影響2: 動的ルートが使えない**。注文状況確認画面が扱う`orderId`はビルド時に列挙できない（注文確定後にサーバーが発行するため）。`/orders/{orderId}`のような動的ルートではなく、`/order?id=<orderId>`のクエリパラメータ方式を採用する。
+
+**影響3: セッション管理はクライアント側で完結させる**。`cart-fn`の`sessionId`はクライアント生成UUIDで、サーバー側に「存在するセッション」という概念がない（§7.2）ため、Cookieではなく`localStorage`に保存する。`cookies()`が使えないこととも整合する。
+
+この決定の詳細な検討経緯（architectサブエージェント相談内容含む）・実装のPR分割は`tasks/todo.md` §17を参照。
 
 ---
 
