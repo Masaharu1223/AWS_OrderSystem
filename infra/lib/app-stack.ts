@@ -66,6 +66,22 @@ export class AppStack extends cdk.Stack {
       apiName: `MobileOrder-${props.stage}-http-api`,
       // デフォルトステージをスロットル設定付きで自前定義するため、自動作成を無効化する。
       createDefaultStage: false,
+      // web/は静的エクスポート(frontend-stack=S3+CloudFrontにNode.jsランタイムが無いため)を採用するため、
+      // ブラウザのJavaScriptが直接このAPIを叩く。よってブラウザのSame-Origin PolicyによりCORS設定が
+      // 必須になる(docs/architecture.md §1.3)。frontend-stack(スライス⑦)が実装されCloudFrontドメインが
+      // 判明したら、allowOriginsにそのドメインを追加する。
+      corsPreflight: {
+        allowOrigins: ['http://localhost:3000'],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PUT,
+          apigwv2.CorsHttpMethod.DELETE,
+          apigwv2.CorsHttpMethod.PATCH,
+        ],
+        // Idempotency-Keyはorder-fnの冪等キー用カスタムヘッダ(§7.3)。Content-Typeはfetchのbody送信に必須。
+        allowHeaders: ['Content-Type', 'Idempotency-Key'],
+      },
     });
 
     // 公開エンドポイント（認証なし）にバースト/レート上限を設定し、過負荷・濫用を防ぐ。
