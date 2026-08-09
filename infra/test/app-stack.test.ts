@@ -133,6 +133,16 @@ describe('AppStack', () => {
     template.resourceCountIs('AWS::ApiGatewayV2::Integration', 4);
   });
 
+  test('HttpApiがCORS設定を持つ(web/の静的エクスポート移行に伴いブラウザから直接叩かれるため)', () => {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: {
+        AllowOrigins: ['http://localhost:3000'],
+        AllowMethods: Match.arrayWith(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
+        AllowHeaders: Match.arrayWith(['Content-Type', 'Idempotency-Key']),
+      },
+    });
+  });
+
   test('DefaultStageのRouteSettingsでポーリング系(status-fn)と書き込み系(order-fn)が別バケットに分離されている', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
       RouteSettings: {
