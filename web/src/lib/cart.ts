@@ -29,6 +29,10 @@ export interface AddItemInput {
   quantity: number;
 }
 
+export function cartItemCount(cart: Cart): number {
+  return cart.items.reduce((sum, item) => sum + item.quantity, 0);
+}
+
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
 export async function fetchCart(sessionId: string): Promise<Cart> {
