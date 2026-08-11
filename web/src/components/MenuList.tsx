@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { fetchMenu, type MenuResponse, type Product } from "@/lib/menu";
 import { VariantModal } from "@/components/VariantModal";
+import { useCartCount } from "@/components/CartCountProvider";
+import { cartItemCount } from "@/lib/cart";
 
 function formatPrice(yen: number): string {
   return `¥${yen.toLocaleString("ja-JP")}`;
@@ -40,6 +42,7 @@ export function MenuList() {
   const [menu, setMenu] = useState<MenuResponse | null>(null);
   const [error, setError] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const { setCount } = useCartCount();
 
   useEffect(() => {
     fetchMenu()
@@ -72,7 +75,10 @@ export function MenuList() {
           key={selectedProduct.productId}
           product={selectedProduct}
           onClose={() => setSelectedProduct(null)}
-          onAdded={() => setSelectedProduct(null)}
+          onAdded={(cart) => {
+            setSelectedProduct(null);
+            setCount(cartItemCount(cart));
+          }}
         />
       )}
     </>
