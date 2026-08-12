@@ -21,8 +21,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     let message = `request failed: ${res.status}`;
     try {
       const body = await res.json();
-      if (typeof body?.message === "string") {
-        message = body.message;
+      if (typeof body?.error?.message === "string") {
+        message = body.error.message;
       }
     } catch {
       // 本文がJSONでない場合(429のプレーンテキスト等)はステータスのみで扱う
