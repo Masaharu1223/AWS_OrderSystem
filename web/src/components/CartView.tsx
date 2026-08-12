@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getSessionId } from "@/lib/session";
 import { fetchCart, updateQuantity, deleteItem, cartItemCount, type Cart } from "@/lib/cart";
 import { useCartCount } from "@/components/CartCountProvider";
+import { createOrder, STORE_ID } from "@/lib/orders";
+import { ApiError } from "@/lib/api";
 
 function formatPrice(yen: number): string {
   return `¥${yen.toLocaleString("ja-JP")}`;
@@ -15,7 +18,13 @@ export function CartView() {
   const [cart, setCart] = useState<Cart | null>(null);
   const [error, setError] = useState(false);
   const [pendingItemId, setPendingItemId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const { setCount } = useCartCount();
+  const router = useRouter();
+  // ボタン連打・ネットワーク再送で同じ注文が重複作成されないよう、確定ボタン押下時に
+  // 1回だけ生成してこのref内で使い回す(カート画面到達時点では発行しない)。
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const sessionId = getSessionId();
@@ -41,6 +50,35 @@ export function CartView() {
       setError(true);
     } finally {
       setPendingItemId(null);
+    }
+  }
+
+  async function handleCheckout() {
+    const sessionId = getSessionId();
+    if (!sessionId) return;
+    if (!idempotencyKeyRef.current) {
+      idempotencyKeyRef.current = crypto.randomUUID();
+    }
+    setSubmitting(true);
+    setCheckoutError(null);
+    try {
+      const order = await createOrder(sessionId, STORE_ID, idempotencyKeyRef.current);
+      setCount(0);
+      router.push(`/order?id=${order.orderId}`);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
+        // 入力自体が無効(空カート)・キーの使い回し不可(409)なので、同じキーでの再送は無意味。
+        idempotencyKeyRef.current = null;
+        setCheckoutError(
+          err.status === 400
+            ? "カートが空です。商品を追加してから確定してください。"
+            : "この注文は既に処理されています。",
+        );
+      } else {
+        // ネットワークエラー・5xxはキーを保持したまま再試行を促す(同じ注文として扱われる)。
+        setCheckoutError("注文の確定に失敗しました。時間をおいて再度お試しください。");
+      }
+      setSubmitting(false);
     }
   }
 
@@ -121,6 +159,15 @@ export function CartView() {
         <span>小計</span>
         <span>{formatPrice(cart.subtotal)}</span>
       </div>
+      {checkoutError && <p className="mt-4 text-sm text-red-600">{checkoutError}</p>}
+      <button
+        type="button"
+        disabled={submitting}
+        onClick={handleCheckout}
+        className="mt-4 w-full rounded bg-black py-3 text-white disabled:opacity-40 dark:bg-white dark:text-black"
+      >
+        注文を確定する
+      </button>
     </>
   );
 }
