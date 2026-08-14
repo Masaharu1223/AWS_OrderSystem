@@ -1,3 +1,6 @@
 # macOS
 .DS_Store
 **/.DS_Store
+
+# 個人的な設計判断メモ（PRには含めない）
+docs/order-status-polling-design.md
