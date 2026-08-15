@@ -41,6 +41,8 @@ class OrderLine(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
     line_id: str
+    order_id: str
+    order_number: int
     product_id: str
     name: str
     category: Category
@@ -52,6 +54,9 @@ class OrderLine(BaseModel):
     queue_seq: int
     created_at: str
     updated_at: str
+    prepared_at: str | None = None
+    ready_at: str | None = None
+    handed_over_at: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -367,6 +367,7 @@ def _build_line_item(order_id: str, store_id: str, line: OrderLine) -> dict[str,
         "SK": f"{ORDER_LINE_SORT_KEY_PREFIX}{line.line_id}",
         **line.model_dump(by_alias=True, exclude={"line_total"}),
     }
+    item["storeId"] = store_id
     item["GSI2PK"] = f"ZONE#{store_id}#{line.zone}"
     item["GSI2SK"] = line.queue_seq
     return item

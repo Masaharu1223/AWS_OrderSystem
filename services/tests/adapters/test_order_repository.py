@@ -58,6 +58,8 @@ def _create_table() -> None:
 def _line(**overrides: object) -> OrderLine:
     kwargs: dict[str, object] = {
         "lineId": "001",
+        "orderId": "ord-xyz",
+        "orderNumber": 42,
         "productId": "prod-001",
         "name": "カフェラテ",
         "category": "espresso",
@@ -202,12 +204,12 @@ def test_create_order_raises_idempotency_conflict_on_key_reuse() -> None:
     _create_table()
     repo = OrderRepository(_TABLE_NAME)
 
-    first_order = _order([_line()], orderId="ord-first")
+    first_order = _order([_line(orderId="ord-first")], orderId="ord-first")
     repo.create_order(
         first_order, idempotency_key="dup-key", session_id="sess-A", cart_keys=[], now=NOW
     )
 
-    second_order = _order([_line()], orderId="ord-second")
+    second_order = _order([_line(orderId="ord-second")], orderId="ord-second")
     with pytest.raises(IdempotencyConflict) as exc_info:
         repo.create_order(
             second_order, idempotency_key="dup-key", session_id="sess-B", cart_keys=[], now=NOW
@@ -232,7 +234,10 @@ def test_cancel_order_cancels_all_waiting_lines_and_removes_from_gsi2() -> None:
     _create_table()
     repo = OrderRepository(_TABLE_NAME)
     order = _order(
-        [_line(lineId="001", zone="A", queueSeq=1), _line(lineId="002", zone="A", queueSeq=2)],
+        [
+            _line(lineId="001", orderId="ord-cancel", zone="A", queueSeq=1),
+            _line(lineId="002", orderId="ord-cancel", zone="A", queueSeq=2),
+        ],
         orderId="ord-cancel",
     )
     repo.create_order(order, idempotency_key="key-c1", session_id="sess-c1", cart_keys=[], now=NOW)
@@ -250,7 +255,10 @@ def test_cancel_order_raises_not_cancellable_when_a_line_is_preparing() -> None:
     _create_table()
     repo = OrderRepository(_TABLE_NAME)
     order = _order(
-        [_line(lineId="001", zone="A", queueSeq=1), _line(lineId="002", zone="A", queueSeq=2)],
+        [
+            _line(lineId="001", orderId="ord-mixed", zone="A", queueSeq=1),
+            _line(lineId="002", orderId="ord-mixed", zone="A", queueSeq=2),
+        ],
         orderId="ord-mixed",
     )
     repo.create_order(order, idempotency_key="key-c2", session_id="sess-c2", cart_keys=[], now=NOW)
@@ -289,9 +297,9 @@ def test_count_ahead_in_zone_counts_only_smaller_queue_seq() -> None:
     repo = OrderRepository(_TABLE_NAME)
     order = _order(
         [
-            _line(lineId="001", zone="B", queueSeq=10),
-            _line(lineId="002", zone="B", queueSeq=20),
-            _line(lineId="003", zone="B", queueSeq=30),
+            _line(lineId="001", orderId="ord-queue", zone="B", queueSeq=10),
+            _line(lineId="002", orderId="ord-queue", zone="B", queueSeq=20),
+            _line(lineId="003", orderId="ord-queue", zone="B", queueSeq=30),
         ],
         orderId="ord-queue",
     )
@@ -306,7 +314,10 @@ def test_count_ahead_in_zone_counts_only_smaller_queue_seq() -> None:
 def test_count_ahead_in_zone_ignores_other_zones_and_stores() -> None:
     _create_table()
     repo = OrderRepository(_TABLE_NAME)
-    order = _order([_line(lineId="001", zone="A", queueSeq=5)], orderId="ord-other-zone")
+    order = _order(
+        [_line(lineId="001", orderId="ord-other-zone", zone="A", queueSeq=5)],
+        orderId="ord-other-zone",
+    )
     repo.create_order(
         order, idempotency_key="key-q2", session_id="sess-q2", cart_keys=[], now=NOW
     )
