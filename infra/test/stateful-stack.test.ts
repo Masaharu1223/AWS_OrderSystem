@@ -67,4 +67,28 @@ describe('StatefulStack', () => {
       Properties: Match.objectLike({ DeletionProtectionEnabled: true }),
     });
   });
+
+  test('店員向けUserPoolがセルフサインアップ無効・RETAIN・終了保護で1個だけ作られる（共有アカウントはデプロイ後に手動作成）', () => {
+    template.resourceCountIs('AWS::Cognito::UserPool', 1);
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolName: 'MobileOrder-dev-staff-user-pool',
+      AdminCreateUserConfig: Match.objectLike({ AllowAdminCreateUserOnly: true }),
+      DeletionProtection: 'ACTIVE',
+    });
+    template.hasResource('AWS::Cognito::UserPool', {
+      DeletionPolicy: 'Retain',
+      UpdateReplacePolicy: 'Retain',
+    });
+  });
+
+  test('UserPoolClientがSRPとADMIN_USER_PASSWORD_AUTHの両方を有効にしている（curl/aws-cli動作確認用）', () => {
+    // arrayWith()は相対順序を維持したサブシーケンス一致のため、1要素ずつ個別に検証する
+    // (CDKが生成するExplicitAuthFlowsの実際の並び順に依存しないようにするため)。
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
+    });
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_ADMIN_USER_PASSWORD_AUTH']),
+    });
+  });
 });

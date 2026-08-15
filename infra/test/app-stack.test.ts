@@ -7,7 +7,13 @@ describe('AppStack', () => {
   const app = new cdk.App();
   const env = { account: '123456789012', region: 'ap-northeast-1' };
   const stateful = new StatefulStack(app, 'TestStateful2', { stage: 'dev', env });
-  const stack = new AppStack(app, 'TestApp', { stage: 'dev', env, table: stateful.table });
+  const stack = new AppStack(app, 'TestApp', {
+    stage: 'dev',
+    env,
+    table: stateful.table,
+    staffUserPool: stateful.staffUserPool,
+    staffUserPoolClient: stateful.staffUserPoolClient,
+  });
   const template = Template.fromStack(stack);
 
   test('menu-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・Powertools Layer1個を持つ', () => {
@@ -95,11 +101,33 @@ describe('AppStack', () => {
     });
   });
 
-  test('Lambda関数はmenu-fn/cart-fn/order-fn/status-fnの4個のみ', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 4);
+  test('store-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・Powertools Layer1個を持つ', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-store-fn',
+      Runtime: 'python3.12',
+      Architectures: ['arm64'],
+      Handler: 'handlers.store.handler',
+      Environment: {
+        Variables: Match.objectLike({
+          POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-store-fn',
+          HANDOVER_API_KEY_PARAMETER_NAME: '/mobile-order/dev/handover-api-key',
+        }),
+      },
+    });
+
+    const fns = template.findResources('AWS::Lambda::Function');
+    const storeFn = Object.values(fns).find(
+      (f) => (f as { Properties: { FunctionName?: string } }).Properties.FunctionName
+        === 'MobileOrder-dev-store-fn',
+    ) as { Properties: { Layers?: unknown[] } };
+    expect(storeFn.Properties.Layers).toHaveLength(1);
   });
 
-  test('HTTP APIに menu-fn 2ルート + cart-fn 4ルート + order-fn 2ルート + status-fn 2ルートが存在する', () => {
+  test('Lambda関数はmenu-fn/cart-fn/order-fn/status-fn/store-fnの5個のみ', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 5);
+  });
+
+  test('HTTP APIに menu-fn 2 + cart-fn 4 + order-fn 2 + status-fn 2 + store-fn 3 = 13ルートが存在する', () => {
     template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /menu' });
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
@@ -127,18 +155,54 @@ describe('AppStack', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'GET /orders/{orderId}/queue-position',
     });
-    template.resourceCountIs('AWS::ApiGatewayV2::Route', 10);
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'GET /stores/{storeId}/zones/{zone}/lines',
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'PATCH /orders/{orderId}/lines/{lineId}/status',
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'PATCH /orders/{orderId}/lines/{lineId}/handover',
+    });
+    template.resourceCountIs('AWS::ApiGatewayV2::Route', 13);
     // menu-fn用1個 + cart-fn用1個(4ルートで共有) + order-fn用1個(2ルートで共有)
-    // + status-fn用1個(2ルートで共有)の4個
-    template.resourceCountIs('AWS::ApiGatewayV2::Integration', 4);
+    // + status-fn用1個(2ルートで共有) + store-fn用1個(3ルートで共有)の5個
+    template.resourceCountIs('AWS::ApiGatewayV2::Integration', 5);
   });
 
-  test('HttpApiがCORS設定を持つ(web/の静的エクスポート移行に伴いブラウザから直接叩かれるため)', () => {
+  test('店員向け2ルート(一覧・状態更新)はJWTオーソライザーを持ち、受渡検知ルートは持たない', () => {
+    template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+    template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+      AuthorizerType: 'JWT',
+    });
+
+    const authorizers = template.findResources('AWS::ApiGatewayV2::Authorizer');
+    const authorizerLogicalId = Object.keys(authorizers)[0];
+
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'GET /stores/{storeId}/zones/{zone}/lines',
+      AuthorizationType: 'JWT',
+      AuthorizerId: { Ref: authorizerLogicalId },
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'PATCH /orders/{orderId}/lines/{lineId}/status',
+      AuthorizationType: 'JWT',
+      AuthorizerId: { Ref: authorizerLogicalId },
+    });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'PATCH /orders/{orderId}/lines/{lineId}/handover',
+      AuthorizationType: 'NONE',
+      AuthorizerId: Match.absent(),
+    });
+  });
+
+  test('HttpApiがCORS設定を持つ(web/の静的エクスポート移行に伴いブラウザから直接叩かれるため。'
+    + 'AuthorizationはCognito JWTを送るために必要)', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: {
         AllowOrigins: ['http://localhost:3000'],
         AllowMethods: Match.arrayWith(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
-        AllowHeaders: Match.arrayWith(['Content-Type', 'Idempotency-Key']),
+        AllowHeaders: Match.arrayWith(['Content-Type', 'Idempotency-Key', 'Authorization']),
       },
     });
   });
@@ -153,6 +217,18 @@ describe('AppStack', () => {
         },
         'POST /orders': { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
         'PATCH /orders/{orderId}/cancel': { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
+        'GET /stores/{storeId}/zones/{zone}/lines': {
+          ThrottlingRateLimit: 50,
+          ThrottlingBurstLimit: 100,
+        },
+        'PATCH /orders/{orderId}/lines/{lineId}/status': {
+          ThrottlingRateLimit: 20,
+          ThrottlingBurstLimit: 40,
+        },
+        'PATCH /orders/{orderId}/lines/{lineId}/handover': {
+          ThrottlingRateLimit: 20,
+          ThrottlingBurstLimit: 40,
+        },
       },
     });
   });
@@ -247,6 +323,39 @@ describe('AppStack', () => {
     );
   });
 
+  test('store-fnのIAMポリシー: grantReadWriteData由来のCRUDアクションはテーブル本体+GSI(index/*)の2件だけにスコープされる(TransactWriteItemsは付与しない)', () => {
+    expectDynamoActionsMatch(
+      policyStatementsFor('MobileOrder-dev-store-fn'),
+      /^dynamodb:(BatchGetItem|BatchWriteItem|ConditionCheckItem|DeleteItem|DescribeTable|GetItem|GetRecords|GetShardIterator|PutItem|Query|Scan|UpdateItem)$/,
+    );
+
+    const statements = policyStatementsFor('MobileOrder-dev-store-fn');
+    const transactWriteStatement = statements.find((stmt) => {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      return actions.includes('dynamodb:TransactWriteItems');
+    });
+    expect(transactWriteStatement).toBeUndefined();
+  });
+
+  test('store-fnのIAMポリシー: SSM GetParameter系は受渡検知の合言葉1パラメータだけにスコープされる', () => {
+    const statements = policyStatementsFor('MobileOrder-dev-store-fn');
+    const ssmStatement = statements.find((stmt) => {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      return actions.some((a) => typeof a === 'string' && a.startsWith('ssm:'));
+    });
+
+    expect(ssmStatement).toBeDefined();
+    const actions = Array.isArray(ssmStatement!.Action) ? ssmStatement!.Action : [ssmStatement!.Action];
+    for (const action of actions) {
+      expect(action).toMatch(/^ssm:(DescribeParameters|GetParameter|GetParameterHistory|GetParameters)$/);
+    }
+    const resources = Array.isArray(ssmStatement!.Resource)
+      ? ssmStatement!.Resource
+      : [ssmStatement!.Resource];
+    expect(resources).toHaveLength(1);
+    expect(JSON.stringify(resources[0])).toMatch(/handover-api-key/);
+  });
+
   test('X-Ray書き込み以外、どのIAMポリシーもResource="*"を持たない', () => {
     const policies = template.findResources('AWS::IAM::Policy');
     const allStatements = Object.values(policies).flatMap(
@@ -268,7 +377,7 @@ describe('AppStack', () => {
     }
   });
 
-  test('store/WebSocket/SQS/EventBridge/Cognitoはこのスライスでは作られない', () => {
+  test('WebSocket/SQS/EventBridgeはMVPスコープ外のためapp-stackには作られない(CognitoはStatefulStack側に作る、stateful-stack.test.ts参照)', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 0);
     template.resourceCountIs('AWS::SQS::Queue', 0);
     template.resourceCountIs('AWS::Events::Rule', 0);

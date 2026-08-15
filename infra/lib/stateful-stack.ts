@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
 
@@ -10,6 +11,8 @@ export interface StageStackProps extends cdk.StackProps {
 
 export class StatefulStack extends cdk.Stack {
   public readonly table: dynamodb.Table;
+  public readonly staffUserPool: cognito.UserPool;
+  public readonly staffUserPoolClient: cognito.UserPoolClient;
 
   constructor(scope: Construct, id: string, props: StageStackProps) {
     // ステートフルなリソース（DynamoDBテーブル本体）を持つスタックのため、
@@ -45,6 +48,32 @@ export class StatefulStack extends cdk.Stack {
       indexName: 'GSI2',
       partitionKey: { name: 'GSI2PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'GSI2SK', type: dynamodb.AttributeType.NUMBER },
+    });
+
+    // 店員さん向けログイン(store-fn)。ログイン情報はテーブルと同じ「消してはいけない」グループのため
+    // このスタックに置く(app-stackではない)。共有アカウント運用のためセルフサインアップは無効にし、
+    // アカウント自体はCDKで作らずデプロイ後に手動作成する(docs/requirements.md)。
+    this.staffUserPool = new cognito.UserPool(this, 'StaffUserPool', {
+      userPoolName: `MobileOrder-${props.stage}-staff-user-pool`,
+      selfSignUpEnabled: false,
+      signInAliases: { username: true },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      deletionProtection: true,
+      // cdk-nag AwsSolutions-COG1対応。CDKの既定値は記号を必須にしないため明示的に指定する。
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+    });
+
+    this.staffUserPoolClient = this.staffUserPool.addClient('StaffUserPoolClient', {
+      // ADMIN_USER_PASSWORD_AUTHはSRP(userSrp、ブラウザ専用)だけだとcurl/aws-cliから動作確認できない
+      // ために追加した確認用ログイン方式。呼び出しにAWS管理者権限(IAM)が別途必要なため、
+      // 店員さん用アプリのセキュリティを弱めることにはならない(architectの推奨から意図的に逸脱)。
+      authFlows: { userSrp: true, adminUserPassword: true },
     });
   }
 }
