@@ -6,6 +6,17 @@ from collections.abc import Sequence
 
 from domain.fulfillment.models import LineStatus, OrderStatus
 
+# docs/architecture.md §7.5: PATCH /orders/{orderId}/lines/{lineId}/status で許可される遷移。
+# それ以外(HANDED_OVER/CANCELLEDへの直接遷移、逆行、いきなり飛ばす変化等)は全て409にする。
+_ALLOWED_LINE_STATUS_TRANSITIONS: frozenset[tuple[LineStatus, LineStatus]] = frozenset(
+    {("WAITING", "PREPARING"), ("PREPARING", "READY")}
+)
+
+
+def is_allowed_line_status_transition(from_status: LineStatus, to_status: LineStatus) -> bool:
+    """明細の状態更新APIが受け付けてよい遷移かを判定する(architecture.md §7.5)。"""
+    return (from_status, to_status) in _ALLOWED_LINE_STATUS_TRANSITIONS
+
 
 def derive_order_status(line_statuses: Sequence[LineStatus]) -> OrderStatus:
     """全明細のステータスから、注文全体のステータスを導出する。

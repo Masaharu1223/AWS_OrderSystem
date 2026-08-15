@@ -6,6 +6,7 @@ from moto import mock_aws
 
 from adapters.order_repository import (
     IdempotencyConflict,
+    LineTransitionConflictError,
     OrderNotCancellableError,
     OrderNotFoundError,
     OrderRepository,
@@ -352,3 +353,146 @@ def test_get_zone_stat_returns_sum_and_count() -> None:
     result = repo.get_zone_stat(_STORE_ID, "A")
 
     assert result == (900, 30)
+
+
+# --- list_zone_lines ---
+
+
+@mock_aws
+def test_list_zone_lines_returns_lines_ordered_by_queue_seq() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [
+            _line(lineId="001", orderId="ord-zone", zone="A", queueSeq=20),
+            _line(lineId="002", orderId="ord-zone", zone="A", queueSeq=10),
+        ],
+        orderId="ord-zone",
+    )
+    repo.create_order(order, idempotency_key="key-z1", session_id="sess-z1", cart_keys=[], now=NOW)
+
+    lines = repo.list_zone_lines(_STORE_ID, "A")
+
+    assert [line.queue_seq for line in lines] == [10, 20]
+    assert [line.line_id for line in lines] == ["002", "001"]
+
+
+@mock_aws
+def test_list_zone_lines_excludes_other_zones_and_stores_and_inactive_lines() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-zone2", zone="B", queueSeq=1)],
+        orderId="ord-zone2",
+    )
+    repo.create_order(order, idempotency_key="key-z2", session_id="sess-z2", cart_keys=[], now=NOW)
+
+    assert repo.list_zone_lines(_STORE_ID, "A") == []
+    assert repo.list_zone_lines("store-02", "B") == []
+
+
+# --- update_line_status ---
+
+
+@mock_aws
+def test_update_line_status_waiting_to_preparing_sets_prepared_at() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-status1", zone="A", queueSeq=1)],
+        orderId="ord-status1",
+    )
+    repo.create_order(order, idempotency_key="key-s1", session_id="sess-s1", cart_keys=[], now=NOW)
+
+    updated = repo.update_line_status("ord-status1", "001", "WAITING", "PREPARING", NOW)
+
+    assert updated.status == "PREPARING"
+    assert updated.prepared_at == "2026-07-12T12:00:00Z"
+    # PREPARING遷移ではGSI2からは外れない(まだ製造キューに残る)。
+    assert len(repo.list_zone_lines(_STORE_ID, "A")) == 1
+
+
+@mock_aws
+def test_update_line_status_preparing_to_ready_removes_from_gsi2_and_records_zonestat() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-status2", zone="A", queueSeq=1)],
+        orderId="ord-status2",
+    )
+    repo.create_order(order, idempotency_key="key-s2", session_id="sess-s2", cart_keys=[], now=NOW)
+    repo.update_line_status("ord-status2", "001", "WAITING", "PREPARING", NOW)
+
+    ready_at = datetime(2026, 7, 12, 12, 1, 30, tzinfo=UTC)  # preparedAtの90秒後
+    updated = repo.update_line_status("ord-status2", "001", "PREPARING", "READY", ready_at)
+
+    assert updated.status == "READY"
+    assert updated.ready_at == "2026-07-12T12:01:30Z"
+    # READY遷移でGSI2から外れる(スパースインデックス)。
+    assert repo.list_zone_lines(_STORE_ID, "A") == []
+    # readyAt(12:01:30) - preparedAt(12:00:00) = 90秒がZONESTATへ加算される。
+    assert repo.get_zone_stat(_STORE_ID, "A") == (90, 1)
+
+
+@mock_aws
+def test_update_line_status_raises_conflict_when_status_does_not_match() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-status3", zone="A", queueSeq=1)],
+        orderId="ord-status3",
+    )
+    repo.create_order(order, idempotency_key="key-s3", session_id="sess-s3", cart_keys=[], now=NOW)
+
+    # 実際はWAITINGなのにPREPARINGからの遷移だと主張する不正なリクエスト。
+    with pytest.raises(LineTransitionConflictError):
+        repo.update_line_status("ord-status3", "001", "PREPARING", "READY", NOW)
+
+
+@mock_aws
+def test_update_line_status_raises_conflict_for_unknown_line() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+
+    with pytest.raises(LineTransitionConflictError):
+        repo.update_line_status("does-not-exist", "001", "WAITING", "PREPARING", NOW)
+
+
+# --- handover_line ---
+
+
+@mock_aws
+def test_handover_line_ready_to_handed_over() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-handover1", zone="A", queueSeq=1)],
+        orderId="ord-handover1",
+    )
+    repo.create_order(
+        order, idempotency_key="key-h1", session_id="sess-h1", cart_keys=[], now=NOW
+    )
+    repo.update_line_status("ord-handover1", "001", "WAITING", "PREPARING", NOW)
+    repo.update_line_status("ord-handover1", "001", "PREPARING", "READY", NOW)
+
+    updated = repo.handover_line("ord-handover1", "001", NOW)
+
+    assert updated.status == "HANDED_OVER"
+    assert updated.handed_over_at == "2026-07-12T12:00:00Z"
+
+
+@mock_aws
+def test_handover_line_raises_conflict_when_not_ready() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-handover2", zone="A", queueSeq=1)],
+        orderId="ord-handover2",
+    )
+    repo.create_order(
+        order, idempotency_key="key-h2", session_id="sess-h2", cart_keys=[], now=NOW
+    )
+
+    # まだWAITINGのまま(READYになっていない)状態で受渡検知が来た、誤検知のケース。
+    with pytest.raises(LineTransitionConflictError):
+        repo.handover_line("ord-handover2", "001", NOW)

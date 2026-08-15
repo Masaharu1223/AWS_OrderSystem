@@ -1,7 +1,7 @@
 import pytest
 
 from domain.fulfillment.models import LineStatus, OrderStatus
-from domain.fulfillment.service import derive_order_status
+from domain.fulfillment.service import derive_order_status, is_allowed_line_status_transition
 
 
 @pytest.mark.parametrize(
@@ -37,3 +37,30 @@ from domain.fulfillment.service import derive_order_status
 )
 def test_derive_order_status(line_statuses: list[LineStatus], expected: OrderStatus) -> None:
     assert derive_order_status(line_statuses) == expected
+
+
+@pytest.mark.parametrize(
+    ("from_status", "to_status"),
+    [("WAITING", "PREPARING"), ("PREPARING", "READY")],
+)
+def test_is_allowed_line_status_transition_accepts_the_two_forward_steps(
+    from_status: LineStatus, to_status: LineStatus
+) -> None:
+    assert is_allowed_line_status_transition(from_status, to_status) is True
+
+
+@pytest.mark.parametrize(
+    ("from_status", "to_status"),
+    [
+        ("WAITING", "READY"),  # 飛び越し
+        ("READY", "PREPARING"),  # 逆行
+        ("WAITING", "HANDED_OVER"),  # HANDED_OVERは受渡検知エンドポイント専用
+        ("READY", "HANDED_OVER"),  # 同上(こちらは許可されるように見えて実際は別エンドポイント)
+        ("WAITING", "CANCELLED"),  # CANCELLEDはキャンセルAPI専用
+        ("PREPARING", "PREPARING"),  # 同一状態への遷移も許可しない
+    ],
+)
+def test_is_allowed_line_status_transition_rejects_everything_else(
+    from_status: LineStatus, to_status: LineStatus
+) -> None:
+    assert is_allowed_line_status_transition(from_status, to_status) is False
