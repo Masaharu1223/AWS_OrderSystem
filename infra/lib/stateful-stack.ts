@@ -75,5 +75,16 @@ export class StatefulStack extends cdk.Stack {
       // 店員さん用アプリのセキュリティを弱めることにはならない(architectの推奨から意図的に逸脱)。
       authFlows: { userSrp: true, adminUserPassword: true },
     });
+
+    // デプロイ後の手動作業(共有アカウント作成・動作確認用ログイン)で必要になるIDをCFN Outputsとして
+    // 出力しておく(app-stack.tsのHttpApiUrlと同じ理由。コンソールを探さずコピペで使えるようにする)。
+    new cdk.CfnOutput(this, 'StaffUserPoolId', {
+      value: this.staffUserPool.userPoolId,
+      exportName: `MobileOrder-${props.stage}-StaffUserPoolId`,
+    });
+    new cdk.CfnOutput(this, 'StaffUserPoolClientId', {
+      value: this.staffUserPoolClient.userPoolClientId,
+      exportName: `MobileOrder-${props.stage}-StaffUserPoolClientId`,
+    });
   }
 }
