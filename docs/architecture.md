@@ -1,8 +1,9 @@
 # アーキテクチャ設計書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 2.4
+**バージョン**: 2.5
 **作成日**: 2026-07-02
-**最終更新**: 2026-08-08（顧客向けフロントを`frontend-stack`（S3+CloudFront）でホスティングする前提から、Next.jsの静的エクスポート採用を確定。§1.3を新設し、CORS必須化・`/order?id=`クエリパラメータ方式・`sessionId`のlocalStorage管理という3つの設計上の影響を明記した〔§1.3〕）
+**最終更新**: 2026-08-16（スライス④store-fn実装に伴い§7.5を実装内容に合わせて訂正。「APIキー」記述をSSM合言葉＋`x-api-key`ヘッダの自前認証に修正（HTTP APIにAPIキー機能自体が存在しないため）、Go言語風の擬似コードをPython/生JSONアクセスに修正、ZONESTAT加算がLINE更新とは別の逐次UpdateItemで行われることを明記、CognitoログインエラーはAPI Gateway側で共通エラーエンベロープと異なる形式のまま返ることを追記、ログイン方式の決定（SRP＋ADMIN_USER_PASSWORD_AUTH）を記録。§6.1のLINE項目一覧にorderId/orderNumber/storeId/handedOverAtを追加〔§6.1, §7.5〕）
+**2026-08-08更新**: 顧客向けフロントを`frontend-stack`（S3+CloudFront）でホスティングする前提から、Next.jsの静的エクスポート採用を確定。§1.3を新設し、CORS必須化・`/order?id=`クエリパラメータ方式・`sessionId`のlocalStorage管理という3つの設計上の影響を明記した〔§1.3〕
 **2026-08-07更新**: 顧客向けフロント実装の前提整備として、`DELETE /cart/{sessionId}/items/{itemId}`の応答契約を`204`から`200 Cart`に変更。`POST`/`PUT`と同様に更新後のカート全体を返すことで、クライアント側が削除後に再GETする必要をなくし、3種のミューテーションAPI全てで契約を統一した〔§7.2〕
 **2026-08-01更新**: スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕
 **2026-07-31更新**: [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映しMVP範囲を再定義。`queueSeq`採番をSQS FIFO経由から`order-fn`内のDynamoDB原子カウンタ同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`〕へ変更。`machine-router-fn`/`zone-consumer-fn`/SQS FIFO×4/`order-aggregator-fn`/WebSocket一式をMVPスコープ外の「将来」章へ格下げ。`POST /orders/{orderId}/handover`（旧設計の名残、自動受渡システム仕様と矛盾していた）を削除し`PATCH /orders/{orderId}/lines/{lineId}/handover`に置換〔§0, §1, §2, §3, §6.1, §6.3, §7.3, §7.4, §7.5, §8, §9, §10, §11〕
@@ -261,10 +262,10 @@ def add_item(in_: AddItemInput) -> Cart: ...
 | 商品（Product） | `MENU`（固定） | `PROD#<productId>` | category, name, basePrice, sizeDelta, allowHot, allowIced, available, displayOrder（任意） |
 | カート明細（ITEM、新設v2.2） | `CART#<sessionId>` | `ITEM#<productId>#<temperature>#<size>` | productId, category, name, variant, quantity, unitPrice, addedAt, updatedAt, **expiresAt**（TTL）。`unitPrice`は追加/変更時点でのスナップショット（write-time計算）。`itemId`・`lineTotal`は保存せず、それぞれSKと`quantity×unitPrice`から都度導出する |
 | 注文ヘッダ（META） | `ORDER#<orderId>` | `META` | orderNumber, storeId, derivedStatus, totalPrice, lineCount, createdAt, updatedAt, GSI1PK, GSI1SK |
-| 明細（LINE） | `ORDER#<orderId>` | `LINE#<lineId>` | productId, name, category, variant, quantity, unitPrice, zone, status, queueSeq, preparedAt, readyAt, createdAt, updatedAt, GSI2PK, GSI2SK。**v2.1: zone/queueSeq/GSI2PK/GSI2SKは`order-fn`の作成トランザクション内で確定済みの値として書き込まれる（§6.3・§7.3）** |
+| 明細（LINE） | `ORDER#<orderId>` | `LINE#<lineId>` | **orderId, orderNumber, storeId**（v2.5で追加。非正規化。ゾーン別一覧でスタッフに注文番号を都度表示するため、明細だけを読んでも注文ヘッダを引き直さずに済む）, productId, name, category, variant, quantity, unitPrice, zone, status, queueSeq, preparedAt, readyAt, **handedOverAt**（v2.5で追加）, createdAt, updatedAt, GSI2PK, GSI2SK。**v2.1: zone/queueSeq/GSI2PK/GSI2SKは`order-fn`の作成トランザクション内で確定済みの値として書き込まれる（§6.3・§7.3）** |
 | ゾーン採番カウンタ | `ZONESEQ#<storeId>#<zone>` | `COUNTER` | seq（Number）。永久に単調増加させ、リセットしない |
 | 注文番号カウンタ（新設、v2.1） | `ORDERNUM#<storeId>#<yyyy-mm-dd>` | `COUNTER` | seq（Number）。店舗・日付単位。TTL 7日 |
-| ゾーン統計（移動平均、v2.1で属性変更） | `ZONESTAT#<storeId>#<zone>` | `STAT` | sumSeconds, sampleCount, updatedAt（旧`emaSeconds`から変更。平均値=`sumSeconds / sampleCount`、`store-fn`が`ADD`でインラインに原子的加算） |
+| ゾーン統計（移動平均、v2.1で属性変更） | `ZONESTAT#<storeId>#<zone>` | `STAT` | sumSeconds, sampleCount, updatedAt（旧`emaSeconds`から変更。平均値=`sumSeconds / sampleCount`。**v2.5: `store-fn`がLINEのREADY遷移と同じUpdateItemではなく、成功後に別途`ADD`する逐次2回目のUpdateItemで加算する**〔§7.5〕） |
 | 冪等キー | `IDEMPOTENCY#<key>` | `META` | orderId, **sessionId**（v2.1で追加。衝突時に照合し他セッションへの注文内容漏洩を防ぐ）, TTL |
 | 接続（別テーブル、将来） | `connectionId`（ConnectionTable） | `orderId` / `ZONE#<zone>` | TTL 2h（§8参照、MVPスコープ外） |
 
@@ -465,16 +466,17 @@ GET /orders/{orderId}/queue-position  → 200 QueuePosition（同一情報の射
 v1.0 の `PATCH /orders/{orderId}/status`（注文単位）は廃止し、明細単位の操作に分割する。**v2.1で`POST /orders/{orderId}/handover`（スタッフによる手動一括受渡確認、旧設計の名残）を削除**し、requirements.md §5.5・§6.3・§7.4が定める自動受渡システム（電子パネル＋検知カメラ）仕様に合わせて、外部システムからの検知通知を受ける明細単位のエンドポイントに置き換える。この矛盾は`tasks/todo.md` §2で積み残しとして記録されていたもので、本改訂で解消する。
 
 ```
-GET   /stores/{storeId}/zones/{zone}/lines?status=WAITING     → 200 { "lines": [ LineCard ], "pollAfterSeconds": 3 }（ポーリング対象、§9）
+GET   /stores/{storeId}/zones/{zone}/lines                     → 200 { "lines": [ LineCard ], "pollAfterSeconds": 3 }（ポーリング対象、§9）
 PATCH /orders/{orderId}/lines/{lineId}/status                  → 200 Line | 409   body: { "fromStatus": "WAITING", "toStatus": "PREPARING" }
 PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 409（外部システム専用。Cognitoではなく別認証、下記参照）
 ```
 
-- Staff向け2エンドポイント（一覧・ステータス更新）の認証は `req.RequestContext.Authorizer.JWT.Claims` から取得（Cognito）
+- Staff向け2エンドポイント（一覧・ステータス更新）はAPI Gateway側にCognito JWTオーソライザーを付け、リクエストがLambdaへ届いた時点で認証済みであることを保証する（ハンドラ側のコードで改めてJWTを検証する必要はない）。ログイン確認に失敗した場合の401はAPI Gatewayが直接返す（**§5.1の共通エラーエンベロープ`{error:{code,message,requestId}}`ではなく、API Gateway既定の`{"message":"Unauthorized"}`形式で返る**。§5.1のスロットリング429と同じく、Lambdaコードを経由しないレスポンスは契約の例外として扱う）
+- ログイン方式は`userSrp`（ブラウザ専用、より安全）に加え`adminUserPassword`も有効化する。理由: `userSrp`だけだとcurl/aws-cliから動作確認できないため、AWS管理者権限（IAM）を別途要求する`ADMIN_USER_PASSWORD_AUTH`を確認用に追加した（誰でもパスワードを平文送信できる弱い方式とは異なり、店員向けアプリのセキュリティを弱めるものではない）
 - **`GET /stores/{storeId}/orders?status=READY_PICKUP`（受渡待ち一覧、旧AP7の利用箇所）は廃止**。自動受渡システム導入によりスタッフが「受渡待ち注文」を見て手動確認する運用自体が無くなったため、この一覧のMVPでの用途が消滅した（§6.2のGSI1定義自体は維持するが、MVPでは`order-fn`の作成時・キャンセル時のみ書き込まれ、`PREPARING`/`READY_PICKUP`/`HANDED_OVER`への追随更新は行わない。§0原則2・requirements.md §14.12の通り、これらの状態追随は`order-aggregator-fn`が将来担う想定）
-- **`PATCH .../handover`のみ別認証**: 呼び出し元は人間のスタッフではなく既存の自動受渡システム（電子パネル＋検知カメラ）であり、Cognitoログインセッションを持たない。API Gatewayの**APIキー**（`x-api-key`ヘッダ）による認証とし、店舗ごとに1つ払い出す運用を暫定案とする（実機連携時の認証方式は外部システムの仕様に依存するため、導入時に確定させる）
+- **`PATCH .../handover`のみ別認証**: 呼び出し元は人間のスタッフではなく既存の自動受渡システム（電子パネル＋検知カメラ）であり、Cognitoログインセッションを持たない。**v2.5訂正: このプロジェクトが使うAPI Gateway HTTP APIにはAPIキー機能自体が存在しない**（REST API固有の機能であり、当初の想定は誤りだった）。代わりに、合言葉をAWS Systems Manager Parameter Store（SecureString）に保管し、Lambdaコード内で送られてきた`x-api-key`ヘッダの値と`hmac.compare_digest`で比較する自前認証を行う（`adapters/handover_auth.py`）。合言葉自体はコード・リポジトリに書かず、デプロイ後に運用者が手動でSSMへ保存する
 
-**GET /stores/{storeId}/zones/{zone}/lines**（GSI2 を Query。requirements.md §5.2 のゾーン別一覧）:
+**GET /stores/{storeId}/zones/{zone}/lines**（GSI2 を Query。requirements.md §5.2 のゾーン別一覧。GSI2は`status`が`WAITING`/`PREPARING`の明細だけを持つスパースインデックス〔§6.3〕のため、クエリパラメータによる絞り込みは不要）:
 
 ```json
 { "lines": [
@@ -492,7 +494,8 @@ PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 40
 
 - 許可遷移は **`WAITING→PREPARING` と `PREPARING→READY` のみ**（`HANDED_OVER` は下記の受渡検知エンドポイントでのみ、`CANCELLED` はキャンセルAPIでのみ）。それ以外は 409。
 - `ConditionExpression: status = :fromStatus`。二重スワイプ・複数タブレット間の競合を 409 で弾く。
-- `PREPARING` 遷移で `preparedAt` を記録（GSI2は維持）。`READY` 遷移で `readyAt` を記録し **GSI2キーをREMOVE**（製造キューから離脱）。同じ更新で`ZONESTAT`（`sumSeconds`/`sampleCount`）を`ADD`でインラインに原子的加算する（`readyAt - preparedAt`を反映、requirements.md §8.2）。
+- `PREPARING` 遷移で `preparedAt` を記録（GSI2は維持）。`READY` 遷移で `readyAt` を記録し **GSI2キーをREMOVE**（製造キューから離脱）。
+- **v2.5訂正: `ZONESTAT`（`sumSeconds`/`sampleCount`）の加算は、LINE本体の更新と同じUpdateItemに含めず、成功後に別途発行する2回目のUpdateItemで`ADD`する**（`readyAt - preparedAt`を反映、requirements.md §8.2）。1回のTransactWriteItemsにまとめる案もあったが、過去スライスでTransactWriteItems関連のIAM/motoの落とし穴を踏んだ経験から、あえて逐次2回に分割した。2回目が万一失敗しても「統計サンプルが1件記録されないだけ」で実害が無いため許容する（欠番許容の原則、§6.3と同じ考え方）。
 
 ```json
 // response 200
