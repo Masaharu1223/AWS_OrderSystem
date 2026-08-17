@@ -6,6 +6,8 @@ from domain.order.models import ZONE_BY_CATEGORY_SIZE, CreateOrderInput, Order, 
 def _base_line_kwargs(**overrides: Any) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "lineId": "001",
+        "orderId": "ord-xyz",
+        "orderNumber": 42,
         "productId": "prod-001",
         "name": "カフェラテ",
         "category": "espresso",

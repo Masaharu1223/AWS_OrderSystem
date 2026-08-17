@@ -12,6 +12,8 @@ from domain.status.service import (
 def _line(**overrides: object) -> OrderLine:
     kwargs: dict[str, object] = {
         "lineId": "001",
+        "orderId": "ord-xyz",
+        "orderNumber": 42,
         "productId": "prod-001",
         "name": "カフェラテ",
         "category": "espresso",

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import boto3
@@ -26,7 +26,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from domain.cart.models import CART_PARTITION_KEY_PREFIX
-from domain.fulfillment.models import Zone
+from domain.fulfillment.models import LineStatus, Zone
 from domain.order.models import (
     ORDER_LINE_SORT_KEY_PREFIX,
     ORDER_META_SORT_KEY,
@@ -81,6 +81,19 @@ class OrderNotCancellableError(Exception):
     def __init__(self, order_id: str) -> None:
         super().__init__(f"order {order_id!r} is not cancellable (not all lines WAITING)")
         self.order_id = order_id
+
+
+class LineTransitionConflictError(Exception):
+    """update_line_status()/handover_line()が期待した現在状態と一致しない場合に送出する(409)。
+
+    存在しないlineIdを指定した場合も、ConditionExpressionの評価上は「状態が一致しない」扱いに
+    なるため同じ例外になる(architecture.md §7.5の「404は返さず一律409」という決定に対応)。
+    """
+
+    def __init__(self, order_id: str, line_id: str) -> None:
+        super().__init__(f"line {line_id!r} of order {order_id!r} is not in the expected status")
+        self.order_id = order_id
+        self.line_id = line_id
 
 
 class OrderRepository:
@@ -233,7 +246,7 @@ class OrderRepository:
             raise OrderNotFoundError(order_id)
 
         pk = _order_partition_key(order_id)
-        timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        timestamp = _format_timestamp(now)
 
         transact_items: list[dict[str, Any]] = [
             {
@@ -314,6 +327,141 @@ class OrderRepository:
         item = cast(dict[str, Any], raw_item)
         return int(item["sumSeconds"]), int(item["sampleCount"])
 
+    def list_zone_lines(self, store_id: str, zone: Zone) -> list[OrderLine]:
+        """店員向けゾーン別一覧(architecture.md §7.5)。GSI2をqueueSeq昇順でQueryする。
+
+        GSI2はstatusがWAITING/PREPARINGの明細だけを持つスパースインデックス(§6.3)のため、
+        追加のstatusフィルタは不要。GSI2のProjectionはALLなので、この1回のQueryだけで
+        レスポンスに必要な全属性(orderId/orderNumber/name等)が揃う。
+        """
+        condition = Key("GSI2PK").eq(f"ZONE#{store_id}#{zone}")
+        items: list[dict[str, Any]] = []
+        exclusive_start_key: dict[str, Any] | None = None
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "IndexName": _GSI2_INDEX_NAME,
+                "KeyConditionExpression": condition,
+            }
+            if exclusive_start_key is not None:
+                kwargs["ExclusiveStartKey"] = exclusive_start_key
+            response = self._table.query(**kwargs)
+            items.extend(response.get("Items", []))
+            exclusive_start_key = response.get("LastEvaluatedKey")
+            if exclusive_start_key is None:
+                break
+
+        return [OrderLine(**item) for item in items]
+
+    def update_line_status(
+        self,
+        order_id: str,
+        line_id: str,
+        from_status: LineStatus,
+        to_status: LineStatus,
+        now: datetime,
+    ) -> OrderLine:
+        """明細の状態を条件付きで更新する(architecture.md §7.5)。
+
+        呼び出し側(handlers/store.py)がdomain.fulfillment.service.is_allowed_line_status_transition()
+        で許可された遷移(WAITING→PREPARING、PREPARING→READY)だけを渡す前提。READY遷移では
+        GSI2キーをREMOVEし(製造キューから離脱)、続けてZONESTATへ製造時間を加算する
+        (計画の決定: TransactWriteItemsではなく、LINE更新成功後の逐次UpdateItemに分ける。
+        2回目が万一失敗しても「統計サンプルが1件記録されない」だけで実害が無いため)。
+
+        `ReturnValues=ALL_OLD`で取得する更新前スナップショットは、この更新で変化しない属性
+        (zone・storeIdなど)を読み取るためだけに使う。新しいstatus/preparedAt/readyAtは
+        呼び出し側が渡した`to_status`/`now`から直接組み立てるため、DynamoDBに新しい値を
+        改めて問い合わせる必要が無い。
+        """
+        timestamp = _format_timestamp(now)
+        pk = _order_partition_key(order_id)
+        sk = f"{ORDER_LINE_SORT_KEY_PREFIX}{line_id}"
+
+        if to_status == "PREPARING":
+            update_expression = "SET #status = :to, updatedAt = :now, preparedAt = :now"
+        else:
+            update_expression = (
+                "SET #status = :to, updatedAt = :now, readyAt = :now REMOVE GSI2PK, GSI2SK"
+            )
+
+        try:
+            response = self._table.update_item(
+                Key={"PK": pk, "SK": sk},
+                UpdateExpression=update_expression,
+                ConditionExpression="#status = :from",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":to": to_status,
+                    ":from": from_status,
+                    ":now": timestamp,
+                },
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise LineTransitionConflictError(order_id, line_id) from exc
+            raise
+
+        old_item = cast(dict[str, Any], response["Attributes"])
+        updates: dict[str, Any] = {"status": to_status, "updated_at": timestamp}
+
+        if to_status == "PREPARING":
+            updates["prepared_at"] = timestamp
+        else:
+            updates["ready_at"] = timestamp
+            prepared_at = old_item.get("preparedAt")
+            if prepared_at is not None:
+                duration_seconds = int(
+                    (now - _parse_timestamp(str(prepared_at))).total_seconds()
+                )
+                self._add_zone_stat(
+                    str(old_item["storeId"]), str(old_item["zone"]), duration_seconds, timestamp
+                )
+
+        return OrderLine(**old_item).model_copy(update=updates)
+
+    def handover_line(self, order_id: str, line_id: str, now: datetime) -> OrderLine:
+        """受渡検知システムからの通知でREADY→HANDED_OVERへ更新する(architecture.md §7.5)。
+
+        READY以外の状態から呼ばれた場合(二重通知・誤検知)はLineTransitionConflictErrorを
+        送出する(409)。ZONESTATはREADY遷移時に既に加算済みのため、ここでは触らない。
+        """
+        timestamp = _format_timestamp(now)
+        pk = _order_partition_key(order_id)
+        sk = f"{ORDER_LINE_SORT_KEY_PREFIX}{line_id}"
+
+        try:
+            response = self._table.update_item(
+                Key={"PK": pk, "SK": sk},
+                UpdateExpression="SET #status = :to, updatedAt = :now, handedOverAt = :now",
+                ConditionExpression="#status = :from",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":to": "HANDED_OVER",
+                    ":from": "READY",
+                    ":now": timestamp,
+                },
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise LineTransitionConflictError(order_id, line_id) from exc
+            raise
+
+        old_item = cast(dict[str, Any], response["Attributes"])
+        return OrderLine(**old_item).model_copy(
+            update={"status": "HANDED_OVER", "updated_at": timestamp, "handed_over_at": timestamp}
+        )
+
+    def _add_zone_stat(self, store_id: str, zone: str, duration_seconds: int, now: str) -> None:
+        """ZONESTATへ1件分の製造時間を原子的に加算する(sumSeconds/sampleCountをADD)。"""
+        self._table.update_item(
+            Key={"PK": f"ZONESTAT#{store_id}#{zone}", "SK": "STAT"},
+            UpdateExpression="ADD sumSeconds :duration, sampleCount :one SET updatedAt = :now",
+            ExpressionAttributeValues={":duration": duration_seconds, ":one": 1, ":now": now},
+        )
+
     def _list_lines(self, order_id: str) -> list[OrderLine]:
         items: list[dict[str, Any]] = []
         condition = Key("PK").eq(_order_partition_key(order_id)) & Key("SK").begins_with(
@@ -345,6 +493,18 @@ def _idempotency_key(key: str) -> str:
     return f"IDEMPOTENCY#{key}"
 
 
+def _format_timestamp(now: datetime) -> str:
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """`_format_timestamp()`が書き込んだISO8601文字列をUTC awareなdatetimeへ戻す。
+
+    ZONESTAT加算(update_line_status)の`readyAt - preparedAt`計算にのみ使う。
+    """
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
 def _build_meta_item(order: Order) -> dict[str, Any]:
     return {
         "PK": _order_partition_key(order.order_id),
@@ -367,6 +527,7 @@ def _build_line_item(order_id: str, store_id: str, line: OrderLine) -> dict[str,
         "SK": f"{ORDER_LINE_SORT_KEY_PREFIX}{line.line_id}",
         **line.model_dump(by_alias=True, exclude={"line_total"}),
     }
+    item["storeId"] = store_id
     item["GSI2PK"] = f"ZONE#{store_id}#{line.zone}"
     item["GSI2SK"] = line.queue_seq
     return item

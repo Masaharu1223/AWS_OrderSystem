@@ -24,4 +24,10 @@ const env = {
 };
 
 const stateful = new StatefulStack(app, `MobileOrder-${stage}-Stateful`, { stage, env });
-new AppStack(app, `MobileOrder-${stage}-App`, { stage, env, table: stateful.table });
+new AppStack(app, `MobileOrder-${stage}-App`, {
+  stage,
+  env,
+  table: stateful.table,
+  staffUserPool: stateful.staffUserPool,
+  staffUserPoolClient: stateful.staffUserPoolClient,
+});

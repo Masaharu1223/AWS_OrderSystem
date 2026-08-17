@@ -70,6 +70,8 @@ def build_order(
         lines.append(
             OrderLine(
                 line_id=line_id,
+                order_id=order_id,
+                order_number=order_number,
                 product_id=cart_item.product_id,
                 name=cart_item.name,
                 category=cart_item.category,

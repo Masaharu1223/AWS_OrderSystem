@@ -57,6 +57,8 @@ def _create_table() -> None:
 def _line(**overrides: object) -> OrderLine:
     kwargs: dict[str, object] = {
         "lineId": "001",
+        "orderId": "ord-xyz",
+        "orderNumber": 42,
         "productId": "prod-001",
         "name": "カフェラテ",
         "category": "espresso",
@@ -181,10 +183,18 @@ def test_get_order_status_position_counts_lines_ahead_in_same_zone(
 ) -> None:
     _create_table()
     _create_order(
-        _order([_line(lineId="001", zone="B", queueSeq=10)], orderId="ord-first"), "key-3"
+        _order(
+            [_line(lineId="001", orderId="ord-first", zone="B", queueSeq=10)],
+            orderId="ord-first",
+        ),
+        "key-3",
     )
     _create_order(
-        _order([_line(lineId="001", zone="B", queueSeq=20)], orderId="ord-second"), "key-4"
+        _order(
+            [_line(lineId="001", orderId="ord-second", zone="B", queueSeq=20)],
+            orderId="ord-second",
+        ),
+        "key-4",
     )
     status_handler = _reload_handler(monkeypatch)
 

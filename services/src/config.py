@@ -16,3 +16,16 @@ def get_config() -> Config:
     if not table_name:
         raise RuntimeError("TABLE_NAME environment variable is required")
     return Config(table_name=table_name)
+
+
+def get_handover_api_key_parameter_name() -> str:
+    """受渡検知エンドポイント専用の合言葉が保管されているSSMパラメータの名前を読む。
+
+    `get_config()`とは別関数にしているのは、この環境変数を必要とするのはstore-fnだけ
+    だから(menu-fn/cart-fn/order-fn/status-fnはこの変数を持たないため、Configに混ぜると
+    それらのLambdaまで起動時にRuntimeErrorで落ちてしまう)。
+    """
+    parameter_name = os.environ.get("HANDOVER_API_KEY_PARAMETER_NAME")
+    if not parameter_name:
+        raise RuntimeError("HANDOVER_API_KEY_PARAMETER_NAME environment variable is required")
+    return parameter_name
