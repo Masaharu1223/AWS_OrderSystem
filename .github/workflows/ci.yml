@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# web/infra/servicesは独立したpackage.json/pyproject.tomlを持つモノレポ構成(ルート統合package.jsonなし)。
+# tasks/todo.md §0では「build→cdk-synth→lint→test→security」という単一直列パイプラインを想定していたが、
+# 3スタックは技術的に独立しているため、ジョブを分けて並列実行する(速度・原因追跡のしやすさを優先)。
+# チェック内容(build/lint/test/security/cdk-synth)は元の意図を変えていない。
+jobs:
+  infra:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      # STACKSを省略するとapp内の全スタック(MobileOrder-dev-Stateful/App)を合成する。
+      # `--all`は存在しないオプションで指定しても警告のみ(exit 0)で気づきにくいため使わない。
+      - run: npx cdk synth
+      # infra/test/nag.test.tsのcdk-nagチェックもここに含まれる(lint+test+securityの一部を兼ねる)。
+      - run: npx jest
+      - run: npm audit --audit-level=high
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      # testファイルが1つも無いため実行ステップ自体を設けない(将来追加され次第 npm test を足す)。
+      - run: npm audit --audit-level=high
+
+  services:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # setup-pythonが入れるpip自体が既知の脆弱性を持つ古いバージョンのことがあり、
+      # 更新せずにpip-auditを走らせるとpip自身が引っかかって無関係にジョブが赤くなる。
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy src
+      - run: pytest
+      # pip-auditはpyproject.tomlのdev依存には含めない(CIでのみ使う一時ツールのため)。
+      - run: pip install pip-audit && pip-audit
