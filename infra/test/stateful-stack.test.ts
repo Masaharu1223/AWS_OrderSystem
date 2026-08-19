@@ -81,14 +81,18 @@ describe('StatefulStack', () => {
     });
   });
 
-  test('UserPoolClientがSRPとADMIN_USER_PASSWORD_AUTHの両方を有効にしている（curl/aws-cli動作確認用）', () => {
-    // arrayWith()は相対順序を維持したサブシーケンス一致のため、1要素ずつ個別に検証する
-    // (CDKが生成するExplicitAuthFlowsの実際の並び順に依存しないようにするため)。
+  test('UserPoolClientがUSER_PASSWORD_AUTHのみを有効にし、SRP/ADMIN_USER_PASSWORD_AUTHは無効（tasks/todo.md §31）', () => {
+    const [client] = Object.values(template.findResources('AWS::Cognito::UserPoolClient'));
+    const flows: string[] = client.Properties.ExplicitAuthFlows;
+    expect(flows).toContain('ALLOW_USER_PASSWORD_AUTH');
+    expect(flows).not.toContain('ALLOW_USER_SRP_AUTH');
+    expect(flows).not.toContain('ALLOW_ADMIN_USER_PASSWORD_AUTH');
+  });
+
+  test('リフレッシュトークンの有効期限が共有タブレット紛失を想定して1日に短縮されている', () => {
     template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
-      ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
-    });
-    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
-      ExplicitAuthFlows: Match.arrayWith(['ALLOW_ADMIN_USER_PASSWORD_AUTH']),
+      RefreshTokenValidity: 1440,
+      TokenValidityUnits: Match.objectLike({ RefreshToken: 'minutes' }),
     });
   });
 });

@@ -70,10 +70,16 @@ export class StatefulStack extends cdk.Stack {
     });
 
     this.staffUserPoolClient = this.staffUserPool.addClient('StaffUserPoolClient', {
-      // ADMIN_USER_PASSWORD_AUTHはSRP(userSrp、ブラウザ専用)だけだとcurl/aws-cliから動作確認できない
-      // ために追加した確認用ログイン方式。呼び出しにAWS管理者権限(IAM)が別途必要なため、
-      // 店員さん用アプリのセキュリティを弱めることにはならない(architectの推奨から意図的に逸脱)。
-      authFlows: { userSrp: true, adminUserPassword: true },
+      // 当初はuserSrp(ブラウザ用)+adminUserPassword(IAM権限必須、curl確認用)の構成だったが、
+      // ブラウザ実装フェーズでarchitectと再検討し、USER_PASSWORD_AUTHへ一本化した。
+      // 守る対象がドリンクの製造ステータスのみ(金銭・個人情報を含まない)で、共有アカウント1つ・
+      // 店内タブレット限定という脅威モデル上、SRP採用=SRPライブラリ導入(100〜190KB)のコストに
+      // 見合わないと判断(tasks/todo.md §31)。USER_PASSWORD_AUTHはIAM権限不要でaws-cliからの
+      // 動作確認もそのまま行えるため、admin-initiate-auth用のadminUserPasswordは不要になった。
+      authFlows: { userPassword: true },
+      // 共有・持ち出し可能なタブレットのため、既定の30日は紛失時の被害windowが長すぎる。
+      // シフト単位の運用に合わせて1日に短縮(新規発行分のみ反映、既存トークンには遡及しない)。
+      refreshTokenValidity: cdk.Duration.days(1),
     });
 
     // デプロイ後の手動作業(共有アカウント作成・動作確認用ログイン)で必要になるIDをCFN Outputsとして
