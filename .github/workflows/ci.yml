@@ -17,19 +17,18 @@ jobs:
         working-directory: infra
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # 実験的にbunへ切り替え(experiment/infra-bun)。npm/actions/setup-nodeとの比較検証用。
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: infra/package-lock.json
-      - run: npm ci
-      - run: npm run build
+          bun-version: "1.3.14"
+      - run: bun install
+      - run: bun run build
       # STACKSを省略するとapp内の全スタック(MobileOrder-dev-Stateful/App)を合成する。
       # `--all`は存在しないオプションで指定しても警告のみ(exit 0)で気づきにくいため使わない。
-      - run: npx cdk synth
+      - run: bunx cdk synth
       # infra/test/nag.test.tsのcdk-nagチェックもここに含まれる(lint+test+securityの一部を兼ねる)。
-      - run: npx jest
-      - run: npm audit --audit-level=high
+      - run: bun run test
+      - run: bun audit --audit-level=high
 
   web:
     runs-on: ubuntu-latest
