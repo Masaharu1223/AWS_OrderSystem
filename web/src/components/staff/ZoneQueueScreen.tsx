@@ -15,6 +15,13 @@ interface PendingAction {
   toStatus: LineStatus;
 }
 
+// lineIdは注文ごとのローカル連番(services/src/domain/order/service.py)で、ゾーン内の別注文と
+// 衝突しうる(どの注文も1件目は"001")。ゾーンキューは複数注文を横断して1覧にまとめるため、
+// ReactのkeyやpendingActionsのキーにはorderIdと組み合わせた複合キーを使う。
+function lineKey(line: ZoneLine): string {
+  return `${line.orderId}:${line.lineId}`;
+}
+
 export function ZoneQueueScreen({ zone }: { zone: Zone }) {
   return (
     <RequireStaffAuth>
@@ -35,22 +42,28 @@ function ZoneQueueContent({ zone }: { zone: Zone }) {
   const handleSwipe = useCallback((line: ZoneLine) => {
     const toStatus = nextLineStatus(line.status);
     if (!toStatus) return;
-    setPendingActions((prev) => ({ ...prev, [line.lineId]: { line, toStatus } }));
+    setPendingActions((prev) => ({ ...prev, [lineKey(line)]: { line, toStatus } }));
   }, []);
 
-  const handleUndo = useCallback((lineId: string) => {
+  const handleUndo = useCallback((key: string) => {
     setPendingActions((prev) => {
       const next = { ...prev };
-      delete next[lineId];
+      delete next[key];
       return next;
     });
   }, []);
 
   const handleConfirm = useCallback(
-    async (lineId: string, pending: PendingAction) => {
+    async (key: string, pending: PendingAction) => {
       if (idToken) {
         try {
-          await updateLineStatus(pending.line.orderId, lineId, pending.line.status, pending.toStatus, idToken);
+          await updateLineStatus(
+            pending.line.orderId,
+            pending.line.lineId,
+            pending.line.status,
+            pending.toStatus,
+            idToken,
+          );
           setConfirmError(false);
         } catch {
           // 失敗時は取り消しと同じ扱いで元の一覧に戻す。次回ポーリングで実際の状態を確認できる。
@@ -59,7 +72,7 @@ function ZoneQueueContent({ zone }: { zone: Zone }) {
       }
       setPendingActions((prev) => {
         const next = { ...prev };
-        delete next[lineId];
+        delete next[key];
         return next;
       });
     },
@@ -74,7 +87,7 @@ function ZoneQueueContent({ zone }: { zone: Zone }) {
     );
   }
 
-  const visibleLines = (lines ?? []).filter((line) => !(line.lineId in pendingActions));
+  const visibleLines = (lines ?? []).filter((line) => !(lineKey(line) in pendingActions));
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6 pb-32">
@@ -101,19 +114,19 @@ function ZoneQueueContent({ zone }: { zone: Zone }) {
         <div className="flex flex-col gap-3">
           <AnimatePresence>
             {visibleLines.map((line) => (
-              <ZoneLineCard key={line.lineId} line={line} onSwipe={() => handleSwipe(line)} />
+              <ZoneLineCard key={lineKey(line)} line={line} onSwipe={() => handleSwipe(line)} />
             ))}
           </AnimatePresence>
         </div>
       )}
 
       <div className="fixed inset-x-0 bottom-0 flex flex-col gap-2 p-4">
-        {Object.entries(pendingActions).map(([lineId, pending]) => (
+        {Object.entries(pendingActions).map(([key, pending]) => (
           <UndoBanner
-            key={lineId}
+            key={key}
             label={`${pending.line.name} を${LINE_ACTION_LABELS[pending.line.status] ?? "次の状態"}にします`}
-            onConfirm={() => handleConfirm(lineId, pending)}
-            onUndo={() => handleUndo(lineId)}
+            onConfirm={() => handleConfirm(key, pending)}
+            onUndo={() => handleUndo(key)}
           />
         ))}
       </div>
