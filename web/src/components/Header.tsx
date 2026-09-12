@@ -13,7 +13,9 @@ export function Header() {
 
   return (
     <header className="flex items-center justify-between border-b border-black/10 px-6 py-4 dark:border-white/10">
-      <span className="font-semibold">モバイルオーダー</span>
+      <Link href="/" className="font-semibold">
+        モバイルオーダー
+      </Link>
       {isCartPage ? (
         <Link href="/" className="text-sm underline">
           ← メニューに戻る
