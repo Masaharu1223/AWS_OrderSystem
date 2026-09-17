@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { motion } from "framer-motion";
 import type { Product } from "@/lib/menu";
 import { addItem, type Cart } from "@/lib/cart";
 import { getOrCreateSessionId } from "@/lib/session";
@@ -9,13 +10,15 @@ function formatPrice(yen: number): string {
   return `¥${yen.toLocaleString("ja-JP")}`;
 }
 
-interface VariantModalProps {
+interface InlineCustomizeProps {
   product: Product;
-  onClose: () => void;
   onAdded: (cart: Cart) => void;
 }
 
-export function VariantModal({ product, onClose, onAdded }: VariantModalProps) {
+// 商品行の直下に半展開するミニカスタム(lazyweb Growth Report「1-Tap Customize」仮説の
+// モックアップに準拠)。VariantModal(全画面オーバーレイ)を置き換え、一覧から離脱せず
+// サイズ/温度を選んでその場でカートに追加できるようにする。
+export function InlineCustomize({ product, onAdded }: InlineCustomizeProps) {
   const sizes = Object.keys(product.sizeDelta);
   // 未選択状態を作らないため、開いた時点で選べる中から必ず1つを初期選択にしておく。
   const [temperature, setTemperature] = useState<"hot" | "iced">(
@@ -41,27 +44,44 @@ export function VariantModal({ product, onClose, onAdded }: VariantModalProps) {
       onAdded(cart);
     } catch {
       setError(true);
-    } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
-      onClick={onClose}
+    <motion.div
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: "auto", opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      className="overflow-hidden"
     >
-      <div
-        className="w-full max-w-sm rounded-t-2xl bg-white p-6 sm:rounded-2xl dark:bg-zinc-900"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="mb-4 flex items-baseline justify-between gap-4">
-          <h2 className="text-lg font-semibold">{product.name}</h2>
-          <span className="text-lg font-semibold">{formatPrice(price)}</span>
-        </div>
+      <div className="flex flex-col gap-4 pb-4">
+        <fieldset>
+          <legend className="mb-2 text-sm text-zinc-600 dark:text-zinc-400">サイズ</legend>
+          <div className="flex gap-2">
+            {sizes.map((option) => {
+              const delta = product.sizeDelta[option] ?? 0;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setSize(option)}
+                  className={`flex-1 rounded border py-2 text-sm ${
+                    size === option
+                      ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                      : "border-black/20 dark:border-white/20"
+                  }`}
+                >
+                  {option}
+                  {delta > 0 ? ` +${formatPrice(delta)}` : ""}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
 
         {product.allowHot && product.allowIced && (
-          <fieldset className="mb-4">
+          <fieldset>
             <legend className="mb-2 text-sm text-zinc-600 dark:text-zinc-400">温度</legend>
             <div className="flex gap-2">
               {(["hot", "iced"] as const).map((option) => (
@@ -82,50 +102,21 @@ export function VariantModal({ product, onClose, onAdded }: VariantModalProps) {
           </fieldset>
         )}
 
-        <fieldset className="mb-6">
-          <legend className="mb-2 text-sm text-zinc-600 dark:text-zinc-400">サイズ</legend>
-          <div className="flex gap-2">
-            {sizes.map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => setSize(option)}
-                className={`flex-1 rounded border py-2 text-sm ${
-                  size === option
-                    ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
-                    : "border-black/20 dark:border-white/20"
-                }`}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </fieldset>
-
         {error && (
-          <p className="mb-4 text-sm text-red-600">
+          <p className="text-sm text-red-600">
             カートへの追加に失敗しました。時間をおいて再度お試しください。
           </p>
         )}
 
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex-1 rounded border border-black/20 py-3 dark:border-white/20"
-          >
-            キャンセル
-          </button>
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={handleAdd}
-            className="flex-1 rounded bg-black py-3 text-white disabled:opacity-40 dark:bg-white dark:text-black"
-          >
-            カートに追加
-          </button>
-        </div>
+        <button
+          type="button"
+          disabled={submitting}
+          onClick={handleAdd}
+          className="w-full rounded bg-black py-3 text-white disabled:opacity-40 dark:bg-white dark:text-black"
+        >
+          {formatPrice(price)}で追加
+        </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
