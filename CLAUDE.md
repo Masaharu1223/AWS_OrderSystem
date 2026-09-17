@@ -43,3 +43,8 @@ chore(cdk): upgrade CDK to v2.180.0
 - `main` への直接 push は禁止。必ず PR を経由する
 - マージ方式は **Squash merge**（main のコミット履歴を綺麗に保つ）
 - CI（lint / test / security / cdk-synth / build）が全て通過してからマージする
+
+## 完了前の検証
+
+- 非自明な変更を完了と報告する前に、`./scripts/verify.sh` を実行し exit code 0 を確認する
+- 失敗した場合は完了報告をせず、原因を調べて修正する
