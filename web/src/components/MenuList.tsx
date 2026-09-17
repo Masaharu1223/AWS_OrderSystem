@@ -1,16 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AnimatePresence } from "framer-motion";
 import { fetchMenu, type MenuResponse, type Product } from "@/lib/menu";
-import { VariantModal } from "@/components/VariantModal";
+import { InlineCustomize } from "@/components/InlineCustomize";
 import { useCartCount } from "@/components/CartCountProvider";
-import { cartItemCount } from "@/lib/cart";
+import { cartItemCount, type Cart } from "@/lib/cart";
 
 function formatPrice(yen: number): string {
   return `¥${yen.toLocaleString("ja-JP")}`;
 }
 
-function ProductRow({ product, onSelect }: { product: Product; onSelect: (product: Product) => void }) {
+function ProductRow({
+  product,
+  expanded,
+  onToggle,
+  onAdded,
+}: {
+  product: Product;
+  expanded: boolean;
+  onToggle: (productId: string) => void;
+  onAdded: (cart: Cart) => void;
+}) {
   const sizes = Object.entries(product.sizeDelta)
     .map(([size, delta]) => `${size}${delta > 0 ? ` +${formatPrice(delta)}` : ""}`)
     .join(" / ");
@@ -20,7 +31,7 @@ function ProductRow({ product, onSelect }: { product: Product; onSelect: (produc
       <button
         type="button"
         disabled={!product.available}
-        onClick={() => onSelect(product)}
+        onClick={() => onToggle(product.productId)}
         className="flex w-full flex-col gap-1 py-3 text-left disabled:opacity-40"
       >
         <div className="flex items-baseline justify-between gap-4">
@@ -34,6 +45,9 @@ function ProductRow({ product, onSelect }: { product: Product; onSelect: (produc
         </div>
         <span className="text-sm text-zinc-600 dark:text-zinc-400">{sizes}</span>
       </button>
+      <AnimatePresence initial={false}>
+        {expanded && <InlineCustomize key={product.productId} product={product} onAdded={onAdded} />}
+      </AnimatePresence>
     </li>
   );
 }
@@ -41,7 +55,7 @@ function ProductRow({ product, onSelect }: { product: Product; onSelect: (produc
 export function MenuList() {
   const [menu, setMenu] = useState<MenuResponse | null>(null);
   const [error, setError] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
   const { setCount } = useCartCount();
 
   useEffect(() => {
@@ -58,6 +72,15 @@ export function MenuList() {
     return <p className="text-zinc-600 dark:text-zinc-400">読み込み中...</p>;
   }
 
+  function handleToggle(productId: string) {
+    setExpandedProductId((current) => (current === productId ? null : productId));
+  }
+
+  function handleAdded(cart: Cart) {
+    setExpandedProductId(null);
+    setCount(cartItemCount(cart));
+  }
+
   return (
     <>
       {menu.categories.map((category) => (
@@ -65,22 +88,17 @@ export function MenuList() {
           <h2 className="mb-2 text-lg font-semibold capitalize">{category.category}</h2>
           <ul>
             {category.products.map((product) => (
-              <ProductRow key={product.productId} product={product} onSelect={setSelectedProduct} />
+              <ProductRow
+                key={product.productId}
+                product={product}
+                expanded={expandedProductId === product.productId}
+                onToggle={handleToggle}
+                onAdded={handleAdded}
+              />
             ))}
           </ul>
         </section>
       ))}
-      {selectedProduct && (
-        <VariantModal
-          key={selectedProduct.productId}
-          product={selectedProduct}
-          onClose={() => setSelectedProduct(null)}
-          onAdded={(cart) => {
-            setSelectedProduct(null);
-            setCount(cartItemCount(cart));
-          }}
-        />
-      )}
     </>
   );
 }
