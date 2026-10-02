@@ -434,7 +434,11 @@ def _build_report_dict(
     metrics: MetricsCollector,
     consistency_report: ConsistencyReport | None,
 ) -> dict[str, Any]:
-    """`--output-json`用に、結果をJSONシリアライズ可能な辞書へまとめる。"""
+    """`--output-json`用に、結果をJSONシリアライズ可能な辞書へまとめる。
+
+    `requests`には1リクエストごとの生のレイテンシ値を含める(集計値のp50/p95/p99だけでは
+    分布の形〔二峰性など〕が分からないため、実測ヒストグラムを後から作れるようにする)。
+    """
     by_endpoint: dict[str, Counter[int | None]] = {}
     for item in metrics.results:
         by_endpoint.setdefault(item.endpoint, Counter())[item.status_code] += 1
@@ -449,6 +453,15 @@ def _build_report_dict(
             endpoint: {str(status): count for status, count in counts.items()}
             for endpoint, counts in by_endpoint.items()
         },
+        "requests": [
+            {
+                "endpoint": item.endpoint,
+                "status_code": item.status_code,
+                "latency_ms": round(item.latency_ms, 2),
+                "error": item.error,
+            }
+            for item in metrics.results
+        ],
         "failures": [
             {"session_id": r.session_id, "reason": r.failure_reason}
             for r in results
