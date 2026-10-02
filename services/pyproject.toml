@@ -21,6 +21,11 @@ dev = [
     "ruff",
     "boto3-stubs[dynamodb]",
 ]
+# 実AWS dev環境への負荷テスト(scripts/load_test_peak.py)専用。
+# pytest/mypy/ruffの通常ループでは使わないため、devグループとは目的を分けて管理する。
+load-test = [
+    "httpx",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
