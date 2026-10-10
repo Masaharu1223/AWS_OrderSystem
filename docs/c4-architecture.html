@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C4 アーキテクチャ図</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --text: #1b2430;
+    --muted: #5b6675;
+    --line: #d9dee5;
+    --edge: #44505f;
+    --halo: #f6f7f9;
+    --boundary: #7b8794;
+    --band: rgba(67, 141, 213, 0.07);
+    --c-person: #08427b;
+    --c-system: #1168bd;
+    --c-container: #438dd5;
+    --c-component: #85bbf0;
+    --c-component-text: #0b2540;
+    --c-ext: #8a8f98;
+    --c-store: #2f7d6d;
+    --accent: #1168bd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e141b;
+      --panel: #151d27;
+      --text: #e6ebf1;
+      --muted: #9aa6b4;
+      --line: #263241;
+      --edge: #aab5c3;
+      --halo: #151d27;
+      --boundary: #6b7684;
+      --band: rgba(133, 187, 240, 0.08);
+      --c-ext: #6f7580;
+      --accent: #6fb1f0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e141b; --panel: #151d27; --text: #e6ebf1; --muted: #9aa6b4;
+    --line: #263241; --edge: #aab5c3; --halo: #151d27; --boundary: #6b7684;
+    --band: rgba(133, 187, 240, 0.08); --c-ext: #6f7580; --accent: #6fb1f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tabs button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 14px;
+  }
+  .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .js section.level { display: none; }
+  .js section.level.active { display: block; }
+  section.level { margin-bottom: 40px; }
+  section.level h2 { font-size: 19px; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; overflow-x: auto; }
+  svg { display: block; width: 100%; min-width: 760px; height: auto; font-family: inherit; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .sw.dash { background: transparent !important; border: 2px dashed var(--c-ext); }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--bg); font-weight: 600; font-size: 13px; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+  .note { margin-top: 12px; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; font-size: 14px; color: var(--muted); }
+  footer { color: var(--muted); font-size: 13px; margin-top: 8px; }
+
+  /* SVG */
+  .node rect { rx: 8; ry: 8; stroke: rgba(0,0,0,.25); stroke-width: 1; }
+  .person rect { fill: var(--c-person); }
+  .system rect { fill: var(--c-system); }
+  .container rect { fill: var(--c-container); }
+  .component rect { fill: var(--c-component); }
+  .ext rect { fill: var(--c-ext); }
+  .data rect { fill: var(--c-store); }
+  .future rect { stroke: var(--c-ext); stroke-width: 2; stroke-dasharray: 6 4; fill: transparent; }
+  .node text { fill: #fff; text-anchor: middle; }
+  .component text { fill: var(--c-component-text); }
+  .future text { fill: var(--muted); }
+  .t1 { font-size: 14px; font-weight: 700; }
+  .t2 { font-size: 11px; opacity: .88; }
+  .t3 { font-size: 11.5px; }
+  .edge { stroke: var(--edge); stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+  .edge.dashed { stroke-dasharray: 6 4; }
+  .el { font-size: 11px; fill: var(--text); text-anchor: middle; paint-order: stroke; stroke: var(--halo); stroke-width: 4px; stroke-linejoin: round; }
+  .el.start { text-anchor: start; }
+  .boundary { fill: none; stroke: var(--boundary); stroke-width: 1.4; stroke-dasharray: 8 5; rx: 12; }
+  .blabel { font-size: 12px; fill: var(--muted); font-weight: 600; }
+  .band { fill: var(--band); stroke: none; rx: 8; }
+  .bandlabel { font-size: 11.5px; fill: var(--muted); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"/>
+    </marker>
+  </defs>
+</svg>
+<div class="wrap">
+  <h1>C4 アーキテクチャ図 — カフェ向けモバイルオーダー</h1>
+  <p class="sub">リポジトリの <code>docs/architecture.md</code>・<code>infra/lib/*.ts</code>・<code>services/src/</code> から整理（MVP現行構成）。Level 1〜3 を掲載し、Level 4（コード）は対象外。</p>
+
+  <div class="tabs" role="tablist" aria-label="C4 レベル">
+    <button role="tab" aria-selected="true" data-target="l1">Level 1 · コンテキスト</button>
+    <button role="tab" aria-selected="false" data-target="l2">Level 2 · コンテナ</button>
+    <button role="tab" aria-selected="false" data-target="l3">Level 3 · コンポーネント</button>
+  </div>
+
+  <!-- ===================== Level 1 ===================== -->
+  <section class="level active" id="l1">
+    <h2>Level 1 — システムコンテキスト</h2>
+    <p class="lead">誰が・何と連携して、このシステムを使うか。</p>
+    <div class="card">
+      <svg viewBox="0 0 1000 560" role="img" aria-label="システムコンテキスト図">
+
+        <g class="node person">
+          <rect x="40" y="40" width="220" height="100"/>
+          <text x="150" y="68" class="t1">顧客</text>
+          <text x="150" y="86" class="t2">[Person]</text>
+          <text x="150" y="110" class="t3">ドリンクを注文し、</text>
+          <text x="150" y="126" class="t3">できあがりを受け取る</text>
+        </g>
+        <g class="node person">
+          <rect x="740" y="40" width="220" height="100"/>
+          <text x="850" y="68" class="t1">店員</text>
+          <text x="850" y="86" class="t2">[Person]</text>
+          <text x="850" y="110" class="t3">担当ゾーンの製造キューを見て</text>
+          <text x="850" y="126" class="t3">状態を更新する</text>
+        </g>
+
+        <g class="node system">
+          <rect x="290" y="230" width="340" height="130"/>
+          <text x="460" y="264" class="t1">モバイルオーダーシステム</text>
+          <text x="460" y="282" class="t2">[Software System]</text>
+          <text x="460" y="308" class="t3">メニュー・カート・注文確定</text>
+          <text x="460" y="326" class="t3">ゾーン別の製造キューと状態管理</text>
+        </g>
+
+        <g class="node ext">
+          <rect x="760" y="250" width="200" height="100"/>
+          <text x="860" y="278" class="t1">自動受渡システム</text>
+          <text x="860" y="296" class="t2">[External System]</text>
+          <text x="860" y="320" class="t3">商品の受け取りを検知する</text>
+        </g>
+
+        <g class="node future">
+          <rect x="40" y="430" width="220" height="90"/>
+          <text x="150" y="460" class="t1">決済サービス</text>
+          <text x="150" y="478" class="t2">[External System · 将来]</text>
+          <text x="150" y="500" class="t3">payment-fn は雛形のみ</text>
+        </g>
+        <g class="node future">
+          <rect x="740" y="430" width="220" height="90"/>
+          <text x="850" y="460" class="t1">自動製造マシン</text>
+          <text x="850" y="478" class="t2">[External System · 将来]</text>
+          <text x="850" y="500" class="t3">連携時に非同期基盤を再導入</text>
+        </g>
+
+        <path class="edge" d="M170,140 L360,230"/>
+        <text class="el" x="228" y="178">メニュー閲覧・注文・</text>
+        <text class="el" x="228" y="192">状況確認 (HTTPS)</text>
+
+        <path class="edge" d="M830,140 L560,230"/>
+        <text class="el" x="725" y="178">ゾーン別キュー確認・</text>
+        <text class="el" x="725" y="192">製造状態の更新 (要ログイン)</text>
+
+        <path class="edge" d="M760,300 L630,300"/>
+        <text class="el" x="695" y="284">受渡検知を通知</text>
+        <text class="el" x="695" y="318">PATCH + APIキー</text>
+
+        <path class="edge dashed" d="M360,360 L170,430"/>
+        <text class="el" x="250" y="400">決済 (将来)</text>
+        <path class="edge dashed" d="M560,360 L830,430"/>
+        <text class="el" x="720" y="400">製造指示 (将来)</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--c-person)"></i>人</span>
+      <span><i class="sw" style="background:var(--c-system)"></i>対象システム</span>
+      <span><i class="sw" style="background:var(--c-ext)"></i>外部システム</span>
+      <span><i class="sw dash"></i>将来（MVPスコープ外）</span>
+    </div>
+    <div class="note">リアルタイム通知はWebSocketではなく <strong>HTTPポーリング</strong>（v2.1で決定）。顧客・店員どちらもサーバーからのpushは受けず、API Gatewayへ定期的に問い合わせる。</div>
+  </section>
+
+  <!-- ===================== Level 2 ===================== -->
+  <section class="level" id="l2">
+    <h2>Level 2 — コンテナ</h2>
+    <p class="lead">デプロイ単位と、それらの間の通信。CDKは <code>StatefulStack</code>（DynamoDB・Cognito）と <code>AppStack</code>（Lambda・API Gateway）の2スタック構成。</p>
+    <div class="card">
+      <svg viewBox="0 0 1000 690" role="img" aria-label="コンテナ図">
+        <g class="node person">
+          <rect x="40" y="20" width="200" height="70"/>
+          <text x="140" y="46" class="t1">顧客</text>
+          <text x="140" y="64" class="t2">[Person]</text>
+        </g>
+        <g class="node person">
+          <rect x="760" y="20" width="200" height="70"/>
+          <text x="860" y="46" class="t1">店員</text>
+          <text x="860" y="64" class="t2">[Person]</text>
+        </g>
+
+        <g class="node container">
+          <rect x="300" y="20" width="400" height="100"/>
+          <text x="500" y="46" class="t1">Web アプリ（顧客UI / 店員UI）</text>
+          <text x="500" y="64" class="t2">[Next.js 静的エクスポート PWA]</text>
+          <text x="500" y="86" class="t3">S3（非公開）+ CloudFront を想定 ※インフラ未実装</text>
+          <text x="500" y="104" class="t3">sessionId は localStorage、API を定期ポーリング</text>
+        </g>
+
+        <g class="node ext">
+          <rect x="20" y="190" width="180" height="70"/>
+          <text x="110" y="216" class="t1">自動受渡システム</text>
+          <text x="110" y="234" class="t2">[External System]</text>
+        </g>
+
+        <g class="node container">
+          <rect x="250" y="190" width="480" height="70"/>
+          <text x="490" y="214" class="t1">API Gateway（HTTP API）</text>
+          <text x="490" y="232" class="t2">[13ルート · CORS · ルート別スロットリング]</text>
+          <text x="490" y="250" class="t3">認証なし10 / Cognito JWT 2 / 受渡はAPIキー</text>
+        </g>
+
+        <g class="node container">
+          <rect x="800" y="190" width="180" height="70"/>
+          <text x="890" y="214" class="t1">Cognito User Pool</text>
+          <text x="890" y="232" class="t2">[店員ログイン · JWT]</text>
+          <text x="890" y="250" class="t3">共有アカウント運用</text>
+        </g>
+
+        <g class="node container">
+          <rect x="20" y="330" width="170" height="105"/>
+          <text x="105" y="358" class="t1">menu-fn</text>
+          <text x="105" y="376" class="t2">[Lambda / Python]</text>
+          <text x="105" y="398" class="t3">メニュー一覧</text>
+          <text x="105" y="414" class="t3">商品詳細</text>
+        </g>
+        <g class="node container">
+          <rect x="200" y="330" width="170" height="105"/>
+          <text x="285" y="358" class="t1">cart-fn</text>
+          <text x="285" y="376" class="t2">[Lambda / Python]</text>
+          <text x="285" y="398" class="t3">カート CRUD</text>
+          <text x="285" y="414" class="t3">24時間TTL</text>
+        </g>
+        <g class="node container">
+          <rect x="380" y="330" width="170" height="105"/>
+          <text x="465" y="358" class="t1">order-fn</text>
+          <text x="465" y="376" class="t2">[Lambda / Python]</text>
+          <text x="465" y="398" class="t3">注文確定・キャンセル</text>
+          <text x="465" y="414" class="t3">queueSeq 同期採番</text>
+        </g>
+        <g class="node container">
+          <rect x="560" y="330" width="170" height="105"/>
+          <text x="645" y="358" class="t1">status-fn</text>
+          <text x="645" y="376" class="t2">[Lambda / Python]</text>
+          <text x="645" y="398" class="t3">注文状態・キュー位置</text>
+          <text x="645" y="414" class="t3">READ時に導出</text>
+        </g>
+        <g class="node container">
+          <rect x="740" y="330" width="170" height="105"/>
+          <text x="825" y="358" class="t1">store-fn</text>
+          <text x="825" y="376" class="t2">[Lambda / Python]</text>
+          <text x="825" y="398" class="t3">ゾーン別一覧・状態更新</text>
+          <text x="825" y="414" class="t3">受渡検知</text>
+        </g>
+
+        <g class="node data">
+          <rect x="230" y="540" width="420" height="110"/>
+          <text x="440" y="568" class="t1">DynamoDB — MobileOrderTable</text>
+          <text x="440" y="586" class="t2">[単一テーブル · オンデマンド · PITR]</text>
+          <text x="440" y="610" class="t3">PK/SK + GSI1（店舗×状態）+ GSI2（ゾーン別キュー）</text>
+          <text x="440" y="628" class="t3">TTL: expiresAt ／ Streams 有効（現状は消費者なし）</text>
+        </g>
+        <g class="node data">
+          <rect x="730" y="540" width="230" height="90"/>
+          <text x="845" y="568" class="t1">SSM Parameter Store</text>
+          <text x="845" y="586" class="t2">[SecureString]</text>
+          <text x="845" y="608" class="t3">受渡APIキーを保管</text>
+        </g>
+
+        <!-- edges -->
+        <path class="edge" d="M240,55 L300,55"/><text class="el" x="270" y="46">HTTPS</text>
+        <path class="edge" d="M760,55 L700,55"/><text class="el" x="730" y="46">HTTPS</text>
+        <path class="edge" d="M500,120 L500,190"/>
+        <text class="el start" x="510" y="160">REST/JSON · ポーリング</text>
+        <path class="edge" d="M680,120 L870,190"/>
+        <text class="el" x="800" y="142">ログイン（トークン取得）</text>
+        <path class="edge" d="M200,225 L250,225"/><text class="el" x="225" y="214">x-api-key</text>
+        <path class="edge" d="M730,225 L800,225"/><text class="el" x="765" y="214">JWT検証</text>
+
+        <path class="edge" d="M330,260 L105,330"/>
+        <path class="edge" d="M410,260 L285,330"/>
+        <path class="edge" d="M490,260 L465,330"/>
+        <path class="edge" d="M570,260 L645,330"/>
+        <path class="edge" d="M650,260 L825,330"/>
+        <text class="el" x="560" y="300">Lambda 統合</text>
+
+        <path class="edge" d="M105,435 L290,540"/>
+        <path class="edge" d="M285,435 L350,540"/>
+        <path class="edge" d="M465,435 L440,540"/>
+        <path class="edge" d="M645,435 L540,540"/>
+        <path class="edge" d="M790,435 L610,540"/>
+        <path class="edge" d="M850,435 L850,540"/>
+        <text class="el start" x="858" y="500">APIキー取得</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--c-person)"></i>人</span>
+      <span><i class="sw" style="background:var(--c-container)"></i>コンテナ</span>
+      <span><i class="sw" style="background:var(--c-store)"></i>データストア</span>
+      <span><i class="sw" style="background:var(--c-ext)"></i>外部システム</span>
+    </div>
+    <p class="lead" style="margin-top:12px">全Lambdaから DynamoDB へは boto3 で <code>GetItem</code> / <code>Query</code> / <code>UpdateItem</code> / <code>TransactWriteItems</code> を発行する。</p>
+
+    <table>
+      <thead><tr><th>コンテナ</th><th>技術</th><th>責務</th></tr></thead>
+      <tbody>
+        <tr><td>Web アプリ</td><td>Next.js（<code>output: 'export'</code>）</td><td>顧客: メニュー・カート・注文・状況確認。店員: ログイン・ゾーン選択・製造キュー。ブラウザから API Gateway を直接呼ぶためCORSが必須</td></tr>
+        <tr><td>API Gateway</td><td>HTTP API</td><td>ルーティング、店員2ルートのJWT検証、バースト100/秒・レート50/秒を既定に、書き込み系は20/秒へ絞る</td></tr>
+        <tr><td>menu / cart / order / status / store-fn</td><td>Lambda（Python）</td><td>機能単位に分割した5関数。詳細は Level 3</td></tr>
+        <tr><td>MobileOrderTable</td><td>DynamoDB</td><td>メニュー・カート・注文ヘッダ・明細・採番カウンタ・冪等キー・ゾーン統計を単一テーブルで保持</td></tr>
+        <tr><td>StaffUserPool</td><td>Cognito</td><td>店員の共有アカウント認証（セルフサインアップ無効、リフレッシュトークン1日）</td></tr>
+        <tr><td>受渡APIキー</td><td>SSM Parameter Store</td><td>自動受渡システムが <code>x-api-key</code> で呼ぶ受渡検知エンドポイントの照合用</td></tr>
+      </tbody>
+    </table>
+    <div class="note">将来版では WebSocket API・EventBridge・SQS FIFO×4・<code>order-aggregator-fn</code>（Streams消費）を追加する計画。契約は <code>architecture.md</code> §8・§9 に残してあるが、現行構成には存在しない。</div>
+  </section>
+
+  <!-- ===================== Level 3 ===================== -->
+  <section class="level" id="l3">
+    <h2>Level 3 — コンポーネント（order-fn を例に）</h2>
+    <p class="lead">各Lambdaは「ハンドラ層 → ドメイン層（純粋関数）」「ハンドラ層 → アダプタ層（DynamoDB等のI/O）」の3層。ドメイン層はAWSに依存せず、アダプタ層を直接呼ばない。</p>
+    <div class="card">
+      <svg viewBox="0 0 1000 720" role="img" aria-label="コンポーネント図">
+        <g class="node container">
+          <rect x="380" y="6" width="240" height="50"/>
+          <text x="500" y="28" class="t1">API Gateway（HTTP API）</text>
+          <text x="500" y="46" class="t2">POST /orders · PATCH /orders/{id}/cancel</text>
+        </g>
+
+        <rect class="boundary" x="20" y="86" width="960" height="470"/>
+        <text class="blabel" x="38" y="108">order-fn  [Lambda / Python]</text>
+
+        <rect class="band" x="36" y="120" width="928" height="96"/>
+        <text class="bandlabel" x="48" y="136">ハンドラ層（AWSイベント依存の外殻）</text>
+        <rect class="band" x="36" y="246" width="928" height="130"/>
+        <text class="bandlabel" x="48" y="262">ドメイン層（AWS非依存・純粋関数）</text>
+        <rect class="band" x="36" y="406" width="928" height="136"/>
+        <text class="bandlabel" x="48" y="422">アダプタ層（boto3 / HTTP応答の整形）</text>
+
+        <g class="node component">
+          <rect x="310" y="142" width="380" height="64"/>
+          <text x="500" y="166" class="t1">handlers/order.py</text>
+          <text x="500" y="182" class="t2">[Powertools · APIGatewayProxyEventV2]</text>
+          <text x="500" y="198" class="t3">冪等チェック → 採番 → 全書き込み → 応答</text>
+        </g>
+
+        <g class="node component">
+          <rect x="45" y="272" width="205" height="92"/>
+          <text x="147" y="296" class="t1">domain/order</text>
+          <text x="147" y="312" class="t2">[models · service]</text>
+          <text x="147" y="332" class="t3">build_order / resolve_zone</text>
+          <text x="147" y="348" class="t3">1注文あたり明細数の上限</text>
+        </g>
+        <g class="node component">
+          <rect x="270" y="272" width="205" height="92"/>
+          <text x="372" y="296" class="t1">domain/fulfillment</text>
+          <text x="372" y="312" class="t2">[models · service]</text>
+          <text x="372" y="332" class="t3">Zone / LineStatus</text>
+          <text x="372" y="348" class="t3">状態遷移・導出ステータス</text>
+        </g>
+        <g class="node component">
+          <rect x="495" y="272" width="205" height="92"/>
+          <text x="597" y="296" class="t1">domain/cart</text>
+          <text x="597" y="312" class="t2">[models · service]</text>
+          <text x="597" y="332" class="t3">カート明細・単価スナップ</text>
+          <text x="597" y="348" class="t3">ITEMキーの解釈</text>
+        </g>
+        <g class="node component">
+          <rect x="720" y="272" width="205" height="92"/>
+          <text x="822" y="296" class="t1">domain/menu</text>
+          <text x="822" y="312" class="t2">[models · pricing · service]</text>
+          <text x="822" y="332" class="t3">Product・価格計算</text>
+          <text x="822" y="348" class="t3">品切れ判定</text>
+        </g>
+
+        <g class="node component">
+          <rect x="45" y="432" width="270" height="96"/>
+          <text x="180" y="456" class="t1">adapters/order_repository</text>
+          <text x="180" y="472" class="t2">[boto3 resource + client]</text>
+          <text x="180" y="492" class="t3">TransactWriteItems · 強整合読み</text>
+          <text x="180" y="508" class="t3">ZONESEQ / ORDERNUM の ADD 採番</text>
+        </g>
+        <g class="node component">
+          <rect x="335" y="432" width="200" height="96"/>
+          <text x="435" y="456" class="t1">adapters/cart_repository</text>
+          <text x="435" y="472" class="t2">[boto3]</text>
+          <text x="435" y="492" class="t3">カート明細の</text>
+          <text x="435" y="508" class="t3">取得・追加・更新・削除</text>
+        </g>
+        <g class="node component">
+          <rect x="555" y="432" width="180" height="96"/>
+          <text x="645" y="456" class="t1">adapters/menu_repository</text>
+          <text x="645" y="472" class="t2">[boto3]</text>
+          <text x="645" y="492" class="t3">商品の一括取得</text>
+          <text x="645" y="508" class="t3">(Query)</text>
+        </g>
+        <g class="node component">
+          <rect x="755" y="432" width="170" height="96"/>
+          <text x="840" y="456" class="t1">adapters/errors, http</text>
+          <text x="840" y="472" class="t2">[共通]</text>
+          <text x="840" y="492" class="t3">エラーエンベロープ</text>
+          <text x="840" y="508" class="t3">JSON応答の組み立て</text>
+        </g>
+
+        <g class="node data">
+          <rect x="300" y="620" width="400" height="76"/>
+          <text x="500" y="648" class="t1">DynamoDB — MobileOrderTable</text>
+          <text x="500" y="666" class="t2">[Container]</text>
+          <text x="500" y="684" class="t3">META / LINE / IDEMPOTENCY / ZONESEQ / ORDERNUM</text>
+        </g>
+
+        <path class="edge" d="M500,56 L500,142"/>
+        <text class="el start" x="510" y="80">イベント</text>
+        <path class="edge" d="M500,206 L500,246"/>
+        <text class="el start" x="510" y="232">判定・組み立てを依頼</text>
+        <path class="edge" d="M690,174 L950,174 L950,440 L930,440"/>
+        <text class="el" x="905" y="160">I/Oはアダプタ経由</text>
+
+        <path class="edge" d="M180,528 L370,620"/>
+        <path class="edge" d="M435,528 L460,620"/>
+        <path class="edge" d="M645,528 L560,620"/>
+        <text class="el" x="640" y="590">boto3</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--c-container)"></i>コンテナ</span>
+      <span><i class="sw" style="background:var(--c-component)"></i>コンポーネント</span>
+      <span><i class="sw" style="background:var(--c-store)"></i>データストア</span>
+    </div>
+
+    <table>
+      <thead><tr><th>Lambda</th><th>ハンドラ</th><th>使うドメイン</th><th>使うアダプタ</th></tr></thead>
+      <tbody>
+        <tr><td>menu-fn</td><td><code>handlers/menu.py</code></td><td>menu</td><td>menu_repository</td></tr>
+        <tr><td>cart-fn</td><td><code>handlers/cart.py</code></td><td>cart</td><td>cart_repository · menu_repository</td></tr>
+        <tr><td>order-fn</td><td><code>handlers/order.py</code></td><td>order · fulfillment · cart · menu</td><td>order_repository · cart_repository · menu_repository</td></tr>
+        <tr><td>status-fn</td><td><code>handlers/status.py</code></td><td>status · order · fulfillment</td><td>order_repository</td></tr>
+        <tr><td>store-fn</td><td><code>handlers/store.py</code></td><td>store · fulfillment</td><td>order_repository · handover_auth（SSM）</td></tr>
+      </tbody>
+    </table>
+    <div class="note">全Lambda共通で <code>adapters/errors</code>・<code>adapters/http</code> を使い、DynamoDBの一時エラーや契約外データを共通エラーエンベロープに変換する。</div>
+  </section>
+
+  <footer>図は手書きSVG（外部ライブラリなし）。構成が変わったら <code>docs/architecture.md</code> と合わせて更新する。</footer>
+</div>
+
+<script>
+  (function () {
+    document.documentElement.classList.add('js');
+    var tabs = document.querySelectorAll('.tabs button');
+    var levels = document.querySelectorAll('section.level');
+    function show(id) {
+      tabs.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.target === id)); });
+      levels.forEach(function (s) { s.classList.toggle('active', s.id === id); });
+      try { history.replaceState(null, '', '#' + id); } catch (e) {}
+    }
+    tabs.forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.target); }); });
+    var h = (location.hash || '').slice(1);
+    if (['l1', 'l2', 'l3'].indexOf(h) >= 0) show(h);
+  })();
+</script>
+</body>
+</html>
