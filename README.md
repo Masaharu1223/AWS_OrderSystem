@@ -12,8 +12,12 @@
 ![Jest](https://img.shields.io/badge/Jest-C21325?style=for-the-badge&logo=jest&logoColor=white)
 
 ## プロジェクト概要
+このPJを始めようと思ったきっかけは以下の2つです。
+1. アルバイトでカフェで働いていたとき、ピーク時間帯の大量注文で製造ラインが滞ってしまい、なおかつモバイルオーダーアプリに表示される提供までの時間に大幅なズレがあったこと。
+2. 2026年6月に参加したAWS Summitにて「Serverlesspresso」と題したモバイルオーダーアプリを触る機会があり、サーバーレスは時間帯で利用料に波があるモバイルオーダーアプリに適しているのではないかと気づいたこと。
 
-カフェ向けモバイルオーダーアプリ。お客様はQRコードからWebページを開いて商品を注文し、店舗に着いたタイミングで受け取れる体験を提供する（決済はレジでの会計のみ、アプリ内決済は対象外）。フロントエンド（Next.js）・バックエンド（Python Lambda）・インフラ（AWS CDK）を1リポジトリで管理するモノレポ構成。
+本アプリはカフェ向けモバイルオーダーアプリです。お客様はQRコードからWebページを開いて商品を注文し、店舗に着いたタイミングで受け取れる体験を提供します。
+フロントエンド（Next.js）・バックエンド（Python Lambda）・インフラ（AWS CDK）を1リポジトリで管理するモノレポ構成。
 
 詳細なAPI契約・DynamoDBキー設計は [`docs/architecture.md`](docs/architecture.md)、要件定義は [`docs/requirements.md`](docs/requirements.md)（非エンジニア向けは [`docs/requirements-plain.md`](docs/requirements-plain.md)）を参照。
 
