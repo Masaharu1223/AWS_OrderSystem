@@ -1,8 +1,8 @@
 # 要件定義書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 1.8  
+**バージョン**: 1.9  
 **作成日**: 2026-06-30  
-**最終更新**: 2026-07-31（[Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映。ゾーン別受付順（`queueSeq`）の採番方式をSQS FIFOからDynamoDB原子カウンタによる`order-fn`内同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`可変間隔〕へ変更。これに伴いmachine-router-fn/zone-consumer-fn/SQS FIFO×4/order-aggregator-fn/WebSocket一式をMVPスコープ外に変更〔§4.3, §4.4, §7.2, §7.2.1, §7.3, §8.1, §8.2, §9, §10.2, §10.5, §10.6, §11.1, §11.2, §11.3, §12, §13, §14.2, §14.6, §14.8, §14.8.1, 新設§14.12, §14.13〕）    
+**最終更新**: 2026-10-17（アプリ内決済導入時のプロバイダ抽象化方針を決定・追記。詳細は§12.1.1、更新履歴は§15を参照）  
 
 **ステータス**: 確定（実装着手可能）
 
@@ -24,6 +24,7 @@
 12. [スコープ外（将来の布石）](#12-スコープ外将来の布石)（12.1 決済導入時のフロー）
 13. [用語定義](#13-用語定義)
 14. [主要な設計判断の経緯](#14-主要な設計判断の経緯)
+15. [更新履歴](#15-更新履歴)
 
 ---
 
@@ -598,7 +599,7 @@ GSI は **GSI1（注文の導出ステータス別一覧）+ GSI2（ゾーン別
 
 | 機能                                        | 状態         | 布石の内容                                                                                                                                                                                                 |
 | ----------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| アプリ内決済（Stripe）                            | 将来         | `PENDING_PAYMENT` / `PAYMENT_FAILED` ステータス定義。`payment-fn` の雛形Lambda、CDK コメント。実装時はStripe Webhookの`event.id`をDynamoDBに保存し、再送による二重更新を防止する                                                                |
+| アプリ内決済（PayPay for Developers、将来Stripe等へ拡張可能） | 将来         | `PENDING_PAYMENT` / `PAYMENT_FAILED` ステータス定義。`payment-fn` の雛形Lambda、CDK コメント。プロバイダ固有の実装は`adapters/payment/`配下に閉じ込め、共通インターフェース経由で切り替え可能にする（詳細は§12.1.1）。実装時はWebhookのイベントID等をDynamoDBに保存し、再送による二重更新を防止する                                                                |
 | Amazon Forecast ETA                       | 将来（データ蓄積後） | フェーズ 1 の EMA 実装を Forecast に差し替え可能な設計                                                                                                                                                                  |
 | Web Push 通知                               | 将来         | バックグラウンドでの通知。Service Worker + FCM                                                                                                                                                                     |
 | 個人別スタッフアカウント                              | 将来         | Cognito ユーザープールは流用可能                                                                                                                                                                                  |
@@ -616,12 +617,23 @@ GSI は **GSI1（注文の導出ステータス別一覧）+ GSI2（ゾーン別
 MVP では「商品選択（メニュー・カート）→ 注文 → `STORE_ACCEPTED`（注文受付＝製造キューへの振り分け対象）」という、決済ステップを持たないフローで実装する。商用化にあたってアプリ内決済を導入する際は、`STORE_ACCEPTED` の手前に決済ステップを挟み込む形で、以下の手順を想定する。
 
 1. `POST /orders` → 注文を `PENDING_PAYMENT`（決済待ち）状態で作成し、`orderId` を返す
-2. クライアントを決済プロバイダ（Stripe 等）のチェックアウト画面へリダイレクトする
-3. 決済完了 → Stripe Webhook を受信 → `payment-fn` が注文を `STORE_ACCEPTED` に更新し、WebSocket で push する
-4. クライアントがチェックアウトから復帰 → WebSocket で状態変化を受信 → キュー位置の表示を開始する
+2. クライアントを決済プロバイダのチェックアウト画面へリダイレクトする
+3. 決済完了 → 決済プロバイダからのWebhook通知を `payment-fn` が受信 → 注文を `STORE_ACCEPTED` に更新する
+4. クライアントは既存のHTTPポーリング（`GET /orders/{orderId}`、`pollAfterSeconds`）でステータス変化を検知し、キュー位置の表示を開始する（WebSocketは導入しない方針。MVPで既にWebSocketからHTTPポーリングへ変更済みのため、決済導入時も同じ仕組みに乗せる。§14.13参照）
 
 - 決済失敗時は `PAYMENT_FAILED` に遷移し、カート内容は保持する（再決済できるようにするため）
 - 「商品選択」自体は決済の有無に関わらず共通のフローであり、決済ステップだけを注文確定と製造キュー投入の間に後付けで挟み込める設計とする（§14.1 の Cognito 格上げと同様、`order-fn` 自体の構造は変えずに済む）
+
+### 12.1.1 決済プロバイダの抽象化方針（2026-10決定）
+
+アプリ内決済は特定の決済SaaSに固定せず、`adapters/payment/`配下に各プロバイダ固有の実装を閉じ込める設計とする。`domain`層・`handlers`層（`payment-fn`本体）は、使用中の決済SaaSが何であるかを一切知らない状態を保つ。
+
+- **初回導入プロバイダ**: PayPay for Developers（システム利用料が無料のため、個人開発規模での導入コストが最も低い）。Stripeは将来の選択肢・併用候補として引き続き想定する（§12.1表の通り、Webhook連携のシンプルさに利点がある）
+- **共通インターフェース**: `PaymentProvider`（`adapters/payment/base.py`、`typing.Protocol`で定義）。公開するメソッドは`create_payment(order_id, amount_yen) -> checkout_url`と`verify_and_parse_notification(raw_body, headers) -> PaymentResult`の2つのみ
+- **戻り値の統一**: 各プロバイダ固有のフィールド名・イベント種別・署名方式の違いは、すべて`adapters/payment/{provider}_client.py`の内部で吸収する。呼び出し元には`domain/payment/models.py`で定義する共通の`PaymentResult`（`order_id`, `outcome: "succeeded" | "failed"`）の形に変換してから返す
+- **プロバイダの選択**: Lambdaのコールドスタート時に、環境変数（`PAYMENT_PROVIDER`、CDKから注入）でどの実装を使うか1つ選ぶ。プロバイダの切り替えはコード変更ではなくCDK側の設定変更で行う
+- **秘密情報の管理**: プロバイダごとに独立したSSMパラメータ名を使う（例: `/mobile-order/{stage}/payment/paypay/api-key`、`/mobile-order/{stage}/payment/stripe/secret-key`）。未使用プロバイダの秘密情報が残っていても他プロバイダの動作に影響しない
+- **契約テスト**: 全プロバイダ実装（テスト・ローカル開発用のフェイク実装を含む）に対して同一のテストケースを実行する仕組み（`tests/adapters/payment/test_contract.py`相当）を用意し、「戻り値の形が約束通りか」を型チェック（`mypy`）だけでなく実行時のテストでも保証する
 
 ---
 
@@ -813,4 +825,15 @@ Phase C・Aは §14.12・§14.13 の決定（`queueSeq`同期採番・ポーリ�
 - 対応として、MVPでは**HTTPポーリング**方式を採用した（§9）。ポーリング間隔はサーバーが`pollAfterSeconds`で指示する可変方式とし、固定間隔のポーリングより無駄な問い合わせを削減する
 - **この決定はコストで劣る選択を意図的に行っている**: 試算では定常運用コストはWebSocket方式の方が安い（月額差にして数十倍）。それでもポーリングを採用した理由は、`ConnectionTable`・切断済みコネクションの掃除・`push-fn`・EventBridgeルール・再接続ロジックという運用部品をMVPから丸ごと外し、まず業務ロジック（キュー管理・ステータス導出）自体の正しさを検証することを優先したためである。将来の再検討時に「なぜ安い方を選ばなかったか」を忘れないよう、この理由を明記しておく
 - REST側の実装（`status-fn`のレスポンス契約等）はWebSocket移行後もほぼそのまま流用できる設計とした（§9.3）。要件§9.1相当のバックグラウンド復帰時REST再取得は、WebSocket採用時でも必須要件であり続けるため、今回作る実装が無駄になることはない
+
+---
+
+## 15. 更新履歴
+
+ヘッダーには最新の更新内容のみを記載する。それ以前の変更はここにまとめる。
+
+| バージョン | 日付 | 内容 |
+| --- | --- | --- |
+| 1.9 | 2026-10-17 | アプリ内決済導入時のプロバイダ抽象化方針を決定・追記。初回導入プロバイダをPayPay for Developersとし、`adapters/payment/`配下に各決済SaaS固有の実装を閉じ込める設計とした（新設§12.1.1）。あわせて§12.1の決済導入フロー記述が、MVPでのWebSocket廃止・HTTPポーリング移行〔v1.8〕に追従していなかった矛盾を修正した |
+| 1.8 | 2026-07-31 | [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映。ゾーン別受付順（`queueSeq`）の採番方式をSQS FIFOからDynamoDB原子カウンタによる`order-fn`内同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`可変間隔〕へ変更。これに伴いmachine-router-fn/zone-consumer-fn/SQS FIFO×4/order-aggregator-fn/WebSocket一式をMVPスコープ外に変更〔§4.3, §4.4, §7.2, §7.2.1, §7.3, §8.1, §8.2, §9, §10.2, §10.5, §10.6, §11.1, §11.2, §11.3, §12, §13, §14.2, §14.6, §14.8, §14.8.1, 新設§14.12, §14.13〕 |
 
