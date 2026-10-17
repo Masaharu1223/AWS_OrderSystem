@@ -17,5 +17,10 @@ LineStatus = Literal["WAITING", "PREPARING", "READY", "HANDED_OVER", "CANCELLED"
 # MVPでは明細が無い段階の状態のため、導出ロジックの対象外としてここには含めない。
 OrderStatus = Literal["STORE_ACCEPTED", "PREPARING", "READY_PICKUP", "HANDED_OVER", "CANCELLED"]
 
+# 決済導入時の、明細がまだ存在しない段階の状態(docs/requirements.md §12.1.1)。
+# OrderStatusとは別のLiteral型として分離し、導出ロジック(derive_order_status)の対象に
+# 混ざらないようにする。PendingPaymentOrder(domain/order/models.py)が持つ。
+PrePaymentOrderStatus = Literal["PENDING_PAYMENT", "PAYMENT_FAILED"]
+
 # 製造ゾーン。docs/requirements.md §7.1の表(カテゴリ×サイズ→ゾーン)に対応する4区画。
 Zone = Literal["A", "B", "C", "D"]

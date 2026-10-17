@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from typing import Protocol
 
-from domain.cart.models import CartItem
 from domain.fulfillment.models import Zone
-from domain.menu.models import Category, Product, Size
+from domain.menu.models import Category, Product, Size, Variant
 from domain.menu.pricing import resolve_unit_price, validate_variant
 from domain.order.models import MAX_LINES_PER_ORDER, ZONE_BY_CATEGORY_SIZE, Order, OrderLine
+
+
+class _PriceableLine(Protocol):
+    """build_order()が明細1件に要求する最小限の形。
+
+    CartItem(order-fn、決済前)とPendingOrderLineSnapshot(payment-fn、決済確定後)の
+    どちらも、この形を満たすためそのまま渡せる(構造的部分型。継承関係は不要)。
+    """
+
+    product_id: str
+    category: Category
+    name: str
+    variant: Variant
+    quantity: int
 
 
 def resolve_zone(category: Category, size: Size) -> Zone:
@@ -18,7 +32,7 @@ def resolve_zone(category: Category, size: Size) -> Zone:
 
 
 def build_order(
-    cart_items: Sequence[CartItem],
+    cart_items: Sequence[_PriceableLine],
     products: Mapping[str, Product],
     store_id: str,
     order_id: str,
@@ -26,8 +40,10 @@ def build_order(
     zone_seq_ends: Mapping[Zone, int],
     now: datetime,
 ) -> Order:
-    """カートから注文(Order)を組み立てる。docs/architecture.md §7.3ステップ1・2に対応する純粋関数。
+    """明細の集まりから注文(Order)を組み立てる。docs/architecture.md §7.3ステップ1・2に対応する。
 
+    `cart_items`という引数名だが、実際は`_PriceableLine`を満たす値なら何でもよい
+    (`CartItem`そのもの、または決済確定後の`PendingOrderLineSnapshot`のリスト)。
     `products`は`cart_items`に含まれる`productId`を全て解決できるマッピング済みの前提
     (呼び出し側=adapters層が事前にDynamoDBから一括取得しておく)。
     価格はカート保存時のスナップショットを信用せず、ここで`domain/menu/pricing`を使って
@@ -47,7 +63,7 @@ def build_order(
 
     # 1周目: 明細ごとにvariant再検証・価格再計算・ゾーン確定を行い、ゾーンごとの明細数を数える。
     # (queueSeqはゾーン単位の連番のため、先に各ゾーンの件数が分からないと割り当てられない)
-    resolved: list[tuple[str, CartItem, int, Zone]] = []
+    resolved: list[tuple[str, _PriceableLine, int, Zone]] = []
     zone_counts: dict[Zone, int] = {}
     for index, cart_item in enumerate(cart_items, start=1):
         product = products[cart_item.product_id]

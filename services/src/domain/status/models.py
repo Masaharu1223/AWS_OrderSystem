@@ -8,7 +8,23 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from domain.fulfillment.models import LineStatus, OrderStatus, Zone
+from domain.fulfillment.models import LineStatus, OrderStatus, PrePaymentOrderStatus, Zone
+
+
+class PendingOrderStatusResponse(BaseModel):
+    """GET /orders/{orderId} のレスポンス(決済確定前、PENDING_PAYMENT/PAYMENT_FAILED段階)。
+
+    明細が無いためOrderStatusResponseとは別の形になる(キュー位置・待ち時間の概念が無い)。
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    order_id: str
+    status: PrePaymentOrderStatus
+    total_price: int
+    checkout_url: str | None
+    updated_at: str
+    poll_after_seconds: int | None
 
 
 class OrderStatusLine(BaseModel):

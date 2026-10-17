@@ -1,9 +1,10 @@
 import pytest
 
 from domain.fulfillment.models import OrderStatus, Zone
-from domain.order.models import Order, OrderLine
+from domain.order.models import Order, OrderLine, PendingPaymentOrder
 from domain.status.service import (
     build_order_status,
+    build_pending_order_status,
     build_queue_position,
     compute_poll_after_seconds,
 )
@@ -224,3 +225,30 @@ def test_build_queue_position_matches_build_order_status_calculations() -> None:
     assert status_response.estimated_ready_minutes == queue_response.estimated_ready_minutes
     assert status_response.poll_after_seconds == queue_response.poll_after_seconds
     assert status_response.status == queue_response.order_status
+
+
+def _pending(**overrides: object) -> PendingPaymentOrder:
+    kwargs: dict[str, object] = {
+        "orderId": "ord-xyz",
+        "storeId": "store-01",
+        "sessionId": "sess-abc",
+        "status": "PENDING_PAYMENT",
+        "totalPrice": 980,
+        "createdAt": "2026-07-12T12:00:00Z",
+        "updatedAt": "2026-07-12T12:00:00Z",
+    }
+    kwargs.update(overrides)
+    return PendingPaymentOrder(**kwargs)
+
+
+def test_build_pending_order_status_polls_quickly_while_pending() -> None:
+    response = build_pending_order_status(_pending(checkoutUrl="https://pay.example/ord-xyz"))
+    assert response.status == "PENDING_PAYMENT"
+    assert response.checkout_url == "https://pay.example/ord-xyz"
+    assert response.poll_after_seconds == 3
+
+
+def test_build_pending_order_status_stops_polling_after_failure() -> None:
+    response = build_pending_order_status(_pending(status="PAYMENT_FAILED"))
+    assert response.status == "PAYMENT_FAILED"
+    assert response.poll_after_seconds is None
