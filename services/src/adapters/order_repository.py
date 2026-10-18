@@ -25,14 +25,17 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from domain.cart.models import CART_PARTITION_KEY_PREFIX
-from domain.fulfillment.models import LineStatus, Zone
+from domain.cart.models import CART_PARTITION_KEY_PREFIX, ITEM_SORT_KEY_PREFIX
+from domain.fulfillment.models import LineStatus, PrePaymentOrderStatus, Zone
 from domain.order.models import (
     ORDER_LINE_SORT_KEY_PREFIX,
     ORDER_META_SORT_KEY,
     ORDER_PARTITION_KEY_PREFIX,
+    PENDING_LINE_SORT_KEY_PREFIX,
     Order,
     OrderLine,
+    PendingOrderLineSnapshot,
+    PendingPaymentOrder,
 )
 
 # IDEMPOTENCYアイテムのTTL。計画の小さな決定#2: カート明細と同じ24時間を踏襲する。
@@ -96,6 +99,18 @@ class LineTransitionConflictError(Exception):
         self.line_id = line_id
 
 
+class PaymentAlreadyFinalizedError(Exception):
+    """finalize_paid_order()/mark_payment_failed()が、既にPENDING_PAYMENTでなくなった
+
+    注文に対して呼ばれた場合に送出する(二重Webhook等)。呼び出し側は「もう処理済み」
+    として扱い、何もせず200を返す(docs/requirements.md §12.1.1の冪等性の仕組み)。
+    """
+
+    def __init__(self, order_id: str) -> None:
+        super().__init__(f"order {order_id!r} is already finalized (not PENDING_PAYMENT)")
+        self.order_id = order_id
+
+
 class OrderRepository:
     def __init__(self, table_name: str) -> None:
         self._table_name = table_name
@@ -146,6 +161,106 @@ class OrderRepository:
             ReturnValues="UPDATED_NEW",
         )
         return int(cast(Any, response["Attributes"]["seq"]))
+
+    def create_pending_payment_order(
+        self,
+        order_id: str,
+        store_id: str,
+        session_id: str,
+        idempotency_key: str,
+        lines: Sequence[PendingOrderLineSnapshot],
+        total_price: int,
+        now: datetime,
+    ) -> PendingPaymentOrder:
+        """決済確定前の仮注文を1回のTransactWriteItemsで作成する。
+
+        明細(PENDINGLINE)はカートのスナップショットとして保存するだけで、ゾーン・queueSeqは
+        まだ決めない(決済成功後にpayment-fnのfinalize_paid_order()が初めて確定する)。
+        冪等性の仕組み(IDEMPOTENCY Put、ConditionExpression=attribute_not_exists)は
+        create_order()と全く同じものを使い回す。
+        """
+        idempotency_pk = _idempotency_key(idempotency_key)
+        expires_at = int((now + _IDEMPOTENCY_TTL).timestamp())
+        timestamp = _format_timestamp(now)
+        pk = _order_partition_key(order_id)
+
+        meta_item: dict[str, Any] = {
+            "PK": pk,
+            "SK": ORDER_META_SORT_KEY,
+            "storeId": store_id,
+            "sessionId": session_id,
+            "derivedStatus": "PENDING_PAYMENT",
+            "totalPrice": total_price,
+            "lineCount": 0,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "GSI1PK": f"STORE#{store_id}#PENDING_PAYMENT",
+            "GSI1SK": timestamp,
+        }
+
+        transact_items: list[dict[str, Any]] = [
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(
+                        {
+                            "PK": idempotency_pk,
+                            "SK": idempotency_pk,
+                            "orderId": order_id,
+                            "sessionId": session_id,
+                            "expiresAt": expires_at,
+                        }
+                    ),
+                    "ConditionExpression": "attribute_not_exists(PK)",
+                    "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+                }
+            },
+            {"Put": {"TableName": self._table_name, "Item": _serialize(meta_item)}},
+        ]
+        for line in lines:
+            pending_line_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{PENDING_LINE_SORT_KEY_PREFIX}{line.line_id}",
+                **line.model_dump(by_alias=True),
+            }
+            transact_items.append(
+                {"Put": {"TableName": self._table_name, "Item": _serialize(pending_line_item)}}
+            )
+
+        try:
+            self._client.transact_write_items(TransactItems=cast(Any, transact_items))
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "TransactionCanceledException":
+                conflict = _extract_idempotency_conflict(exc)
+                if conflict is not None:
+                    raise IdempotencyConflict(*conflict) from exc
+            raise
+
+        return PendingPaymentOrder(
+            order_id=order_id,
+            store_id=store_id,
+            session_id=session_id,
+            status="PENDING_PAYMENT",
+            total_price=total_price,
+            checkout_url=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+    def set_checkout_url(self, order_id: str, checkout_url: str, now: datetime) -> None:
+        """META.checkoutUrlを非トランザクションのUpdateItemで追記する。
+
+        失敗しても実害は小さい(ZONESTAT更新と同じ考え方): クライアントへのレスポンスには
+        既にcheckoutUrlが含まれているため、DynamoDB側への反映が万一失敗しても、
+        ポーリング時にcheckoutUrlがNoneで返るだけで済む。
+        """
+        pk = _order_partition_key(order_id)
+        timestamp = _format_timestamp(now)
+        self._table.update_item(
+            Key={"PK": pk, "SK": ORDER_META_SORT_KEY},
+            UpdateExpression="SET checkoutUrl = :url, updatedAt = :now",
+            ExpressionAttributeValues={":url": checkout_url, ":now": timestamp},
+        )
 
     def create_order(
         self,
@@ -235,6 +350,66 @@ class OrderRepository:
             created_at=str(meta_item["createdAt"]),
         )
 
+    def get_order_or_pending(self, order_id: str) -> Order | PendingPaymentOrder | None:
+        """META行のderivedStatusを見て、決済確定前ならPendingPaymentOrder、確定後ならOrderを返す。
+
+        get_order()は既存呼び出し元(cancel_order()等)の挙動を変えないよう変更せず残し、
+        こちらを決済導入に伴う新しい公開メソッドとして追加する。
+        """
+        pk = _order_partition_key(order_id)
+        meta_response = self._table.get_item(Key={"PK": pk, "SK": ORDER_META_SORT_KEY})
+        raw_meta_item = meta_response.get("Item")
+        if raw_meta_item is None:
+            return None
+        meta_item = cast(dict[str, Any], raw_meta_item)
+        derived_status = str(meta_item["derivedStatus"])
+
+        if derived_status in ("PENDING_PAYMENT", "PAYMENT_FAILED"):
+            return PendingPaymentOrder(
+                order_id=order_id,
+                store_id=str(meta_item["storeId"]),
+                session_id=str(meta_item["sessionId"]),
+                status=cast(PrePaymentOrderStatus, derived_status),
+                total_price=int(meta_item["totalPrice"]),
+                checkout_url=cast("str | None", meta_item.get("checkoutUrl")),
+                created_at=str(meta_item["createdAt"]),
+                updated_at=str(meta_item["updatedAt"]),
+            )
+
+        return Order(
+            order_id=order_id,
+            order_number=int(meta_item["orderNumber"]),
+            store_id=str(meta_item["storeId"]),
+            lines=self._list_lines(order_id),
+            created_at=str(meta_item["createdAt"]),
+        )
+
+    def get_pending_lines(self, order_id: str) -> list[PendingOrderLineSnapshot]:
+        """PENDINGLINE#行をQueryして返す(_list_lines()と同じクエリ・ページネーションパターン)。
+
+        payment-fnがfinalize_paid_order()を呼ぶ前に、確定すべき明細の一覧を読むために使う。
+        """
+        items: list[dict[str, Any]] = []
+        condition = Key("PK").eq(_order_partition_key(order_id)) & Key("SK").begins_with(
+            PENDING_LINE_SORT_KEY_PREFIX
+        )
+        exclusive_start_key: dict[str, Any] | None = None
+
+        while True:
+            if exclusive_start_key is None:
+                response = self._table.query(KeyConditionExpression=condition)
+            else:
+                response = self._table.query(
+                    KeyConditionExpression=condition,
+                    ExclusiveStartKey=exclusive_start_key,
+                )
+            items.extend(response.get("Items", []))
+            exclusive_start_key = response.get("LastEvaluatedKey")
+            if exclusive_start_key is None:
+                break
+
+        return [PendingOrderLineSnapshot(**item) for item in items]
+
     def cancel_order(self, order_id: str, now: datetime) -> Order:
         """全明細WAITINGの場合のみキャンセルする(requirements.md §4.5)。
 
@@ -297,6 +472,110 @@ class OrderRepository:
         if cancelled is None:
             raise RuntimeError(f"order {order_id!r} disappeared immediately after cancel")
         return cancelled
+
+    def finalize_paid_order(
+        self, pending: PendingPaymentOrder, order: Order, now: datetime
+    ) -> Order:
+        """決済成功時にPENDING_PAYMENT注文を1回のTransactWriteItemsで確定する。
+
+        `order`はdomain.order.service.build_order()が組み立てた完成形(zone/queueSeq確定済み、
+        get_pending_lines()で読んだ明細から作る)。META行の更新に
+        `ConditionExpression: derivedStatus = :pending_payment`を付けることで、
+        同じWebhook通知が2回届いても2回目は原子的に失敗する(二重処理の一次防御、
+        docs/requirements.md §12.1.1)。カートの削除は、注文が実際に成立した今この瞬間に
+        初めて行う(決済失敗時は消費しないため再決済できる、という既存方針を維持する)。
+
+        既に確定済み(PENDING_PAYMENTでなくなっている)場合はPaymentAlreadyFinalizedErrorを
+        送出する。このトランザクション内にConditionExpressionを持つアクションはMETA更新の
+        1つだけのため、TransactionCanceledExceptionは必ずこれが原因と判断してよい。
+        """
+        pk = _order_partition_key(pending.order_id)
+        timestamp = _format_timestamp(now)
+        cart_pk = f"{CART_PARTITION_KEY_PREFIX}{pending.session_id}"
+
+        transact_items: list[dict[str, Any]] = [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize({"PK": pk, "SK": ORDER_META_SORT_KEY}),
+                    "UpdateExpression": (
+                        "SET derivedStatus = :accepted, orderNumber = :orderNumber, "
+                        "lineCount = :lineCount, updatedAt = :now, GSI1PK = :gsi1pk"
+                    ),
+                    "ConditionExpression": "derivedStatus = :pendingPayment",
+                    "ExpressionAttributeValues": _serialize(
+                        {
+                            ":accepted": "STORE_ACCEPTED",
+                            ":pendingPayment": "PENDING_PAYMENT",
+                            ":orderNumber": order.order_number,
+                            ":lineCount": len(order.lines),
+                            ":now": timestamp,
+                            ":gsi1pk": f"STORE#{order.store_id}#STORE_ACCEPTED",
+                        }
+                    ),
+                }
+            }
+        ]
+        for line in order.lines:
+            transact_items.append(
+                {
+                    "Delete": {
+                        "TableName": self._table_name,
+                        "Key": _serialize(
+                            {"PK": pk, "SK": f"{PENDING_LINE_SORT_KEY_PREFIX}{line.line_id}"}
+                        ),
+                    }
+                }
+            )
+            line_item = _build_line_item(order.order_id, order.store_id, line)
+            transact_items.append(
+                {"Put": {"TableName": self._table_name, "Item": _serialize(line_item)}}
+            )
+            cart_sort_key = (
+                f"{ITEM_SORT_KEY_PREFIX}{line.product_id}#{line.variant.to_key_segment()}"
+            )
+            transact_items.append(
+                {
+                    "Delete": {
+                        "TableName": self._table_name,
+                        "Key": _serialize({"PK": cart_pk, "SK": cart_sort_key}),
+                    }
+                }
+            )
+
+        try:
+            self._client.transact_write_items(TransactItems=cast(Any, transact_items))
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "TransactionCanceledException":
+                raise PaymentAlreadyFinalizedError(pending.order_id) from exc
+            raise
+
+        return order
+
+    def mark_payment_failed(self, pending: PendingPaymentOrder, now: datetime) -> None:
+        """決済失敗時にPAYMENT_FAILEDへ遷移する。
+
+        カートは削除しない(requirements.md §12.1: 再決済できるようにするため)。
+        finalize_paid_order()と同じConditionExpressionで二重Webhookを防ぐ。
+        """
+        pk = _order_partition_key(pending.order_id)
+        timestamp = _format_timestamp(now)
+        try:
+            self._table.update_item(
+                Key={"PK": pk, "SK": ORDER_META_SORT_KEY},
+                UpdateExpression="SET derivedStatus = :failed, updatedAt = :now, GSI1PK = :gsi1pk",
+                ConditionExpression="derivedStatus = :pendingPayment",
+                ExpressionAttributeValues={
+                    ":failed": "PAYMENT_FAILED",
+                    ":pendingPayment": "PENDING_PAYMENT",
+                    ":now": timestamp,
+                    ":gsi1pk": f"STORE#{pending.store_id}#PAYMENT_FAILED",
+                },
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise PaymentAlreadyFinalizedError(pending.order_id) from exc
+            raise
 
     def count_ahead_in_zone(self, store_id: str, zone: Zone, queue_seq: int) -> int:
         """AP-Z2: 自分より前(queueSeqが小さい)の明細数を数える。位置は呼び出し側で`+1`する。"""
