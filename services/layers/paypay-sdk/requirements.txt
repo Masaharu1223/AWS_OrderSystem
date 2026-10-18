@@ -1,0 +1,9 @@
+# order-fn/status-fn専用のLambda Layer(docs/requirements.md §12.1.1)。
+# CDKがDockerバンドリングでこのディレクトリをpip installし、Layerとして配布する
+# (Powertools Layerはaws-lambda-powertoolsのみを供給するため、paypayopaは別Layerが必要)。
+#
+# setuptools<81: paypayopaがpkg_resourcesをimportしているが、setuptools 81以降では
+# pkg_resourcesが削除されているため、古いバージョンに固定しないとLambda起動時に
+# ModuleNotFoundErrorになる(services/pyproject.tomlのdev依存コメントと同じ制約)。
+paypayopa==1.0.9
+setuptools<81

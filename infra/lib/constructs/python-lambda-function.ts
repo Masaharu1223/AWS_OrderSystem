@@ -32,6 +32,12 @@ export interface PythonLambdaFunctionProps {
    * よりCDKが自動作成する既定のロググループのまま。既存のMenuFn/CartFnは指定しないため挙動は変わらない)
    */
   readonly logRetentionDays?: number;
+  /**
+   * Powertools Layerに加えて付与する追加のLambda Layer(例: paypayopa専用Layer)。
+   * 全Lambda共通のPowertools Layerとは別に、必要なLambdaにだけ付与する。
+   * @default undefined(追加Layer無し)
+   */
+  readonly extraLayers?: lambda.ILayerVersion[];
 }
 
 /**
@@ -65,6 +71,7 @@ export class PythonLambdaFunction extends lambda.Function {
       }),
       layers: [
         lambda.LayerVersion.fromLayerVersionArn(scope, `${id}PowertoolsLayer`, powertoolsLayerArn),
+        ...(props.extraLayers ?? []),
       ],
       environment: {
         POWERTOOLS_SERVICE_NAME: props.functionName,

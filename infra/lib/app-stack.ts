@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -5,10 +6,14 @@ import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { PythonLambdaFunction } from './constructs/python-lambda-function';
 import { StageStackProps } from './stateful-stack';
+
+// services/layers/paypay-sdk を指す。infra/lib/ からの相対パス。
+const PAYPAY_SDK_LAYER_PATH = path.join(__dirname, '..', '..', 'services', 'layers', 'paypay-sdk');
 
 export interface AppStackProps extends StageStackProps {
   readonly table: dynamodb.Table;
@@ -39,10 +44,45 @@ export class AppStack extends cdk.Stack {
     // cart-fnはCART行の読み書きに加え、商品検証のためMENU行の読み取りも行う(単一テーブル設計)。
     props.table.grantReadWriteData(cartFn);
 
+    // paypayopa SDK専用のLambda Layer(docs/requirements.md §12.1.1)。Powertools Layerには
+    // 含まれないため、order-fn/status-fnにのみ追加で付与する。依存パッケージは全て純Python
+    // (paypayopa/pyjwt/requests一式)のためバンドリングのアーキテクチャは問わない。
+    const paypaySdkLayer = new lambda.LayerVersion(this, 'PaypaySdkLayer', {
+      layerVersionName: `MobileOrder-${props.stage}-paypay-sdk`,
+      code: lambda.Code.fromAsset(PAYPAY_SDK_LAYER_PATH, {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: ['bash', '-c', 'pip install -r requirements.txt -t /asset-output/python'],
+        },
+      }),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      compatibleArchitectures: [lambda.Architecture.ARM_64],
+      description: 'paypayopa SDK(order-fn/status-fn専用、PAYMENT_PROVIDER=paypayのときのみ必要)',
+    });
+
+    // PayPayの秘密情報(SSM SecureString)はCDKでは作らず、デプロイ後に手動で保存する運用のため
+    // (受渡検知の合言葉と同じ方針)、実体を作らないfromSecureStringParameterAttributes()で
+    // インポートし、IAM権限(grantRead)だけを付与する。
+    const paypayApiKeyParameterName = `/mobile-order/${props.stage}/payment/paypay/api-key`;
+    const paypayApiSecretParameterName = `/mobile-order/${props.stage}/payment/paypay/api-secret`;
+    // web側のリダイレクト着地ページは未実装(別タスク)のため、frontend-stack実装までの暫定値。
+    // 実際のドメインが決まったらCDKコンテキスト(--context paypayRedirectUrl=...)で上書きする。
+    const paypayRedirectUrl = (this.node.tryGetContext('paypayRedirectUrl') as string | undefined)
+      ?? 'http://localhost:3000/order';
+
+    const paypayEnvironment = {
+      PAYMENT_PROVIDER: 'paypay',
+      PAYPAY_API_KEY_PARAMETER_NAME: paypayApiKeyParameterName,
+      PAYPAY_API_SECRET_PARAMETER_NAME: paypayApiSecretParameterName,
+      PAYPAY_REDIRECT_URL: paypayRedirectUrl,
+      PAYPAY_PRODUCTION_MODE: props.stage === 'prod' ? 'true' : 'false',
+    };
+
     const orderFn = new PythonLambdaFunction(this, 'OrderFn', {
       functionName: `MobileOrder-${props.stage}-order-fn`,
       handler: 'handlers.order.handler',
-      environment: { TABLE_NAME: props.table.tableName },
+      environment: { TABLE_NAME: props.table.tableName, ...paypayEnvironment },
+      extraLayers: [paypaySdkLayer],
     });
     // order-fnはORDER/LINE/ZONESEQ/ORDERNUM/IDEMPOTENCYの書き込み＋CART削除＋MENU読み取りを行う
     // (単一テーブル設計。書き込み範囲がcart-fnより広いが同じgrantReadWriteData()で足りる)。
@@ -59,13 +99,29 @@ export class AppStack extends cdk.Stack {
     const statusFn = new PythonLambdaFunction(this, 'StatusFn', {
       functionName: `MobileOrder-${props.stage}-status-fn`,
       handler: 'handlers.status.handler',
-      environment: { TABLE_NAME: props.table.tableName },
+      environment: { TABLE_NAME: props.table.tableName, ...paypayEnvironment },
+      extraLayers: [paypaySdkLayer],
       // ポーリング専用の読み取りLambdaのためINFOログを抑え、ロググループも短期保持にして
       // CloudWatch Logsコストを抑える(todo.md §1③のインフラタスク、architectの指摘)。
       logLevel: 'WARNING',
       logRetentionDays: props.stage === 'prod' ? 14 : 7,
     });
     props.table.grantReadData(statusFn);
+
+    const paypayApiKeyParameter = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      'PaypayApiKeyParameter',
+      { parameterName: paypayApiKeyParameterName },
+    );
+    const paypayApiSecretParameter = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      'PaypayApiSecretParameter',
+      { parameterName: paypayApiSecretParameterName },
+    );
+    for (const fn of [orderFn, statusFn]) {
+      paypayApiKeyParameter.grantRead(fn);
+      paypayApiSecretParameter.grantRead(fn);
+    }
 
     // 受渡検知の合言葉(SSM SecureString)はCDKでは作らず、デプロイ後に手動で保存する運用のため
     // (計画の決定。共有アカウントと同じ理由)、実体を作らないfromSecureStringParameterAttributes()で
