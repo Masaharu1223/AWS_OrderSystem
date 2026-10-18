@@ -21,12 +21,12 @@ from adapters.order_repository import (
     OrderNotFoundError,
     OrderRepository,
 )
+from adapters.payment.base import PaymentProviderError
+from adapters.payment.factory import get_payment_provider
 from config import get_config
-from domain.cart.models import ITEM_SORT_KEY_PREFIX
-from domain.fulfillment.models import Zone
 from domain.menu.models import Product
-from domain.order.models import MAX_LINES_PER_ORDER, CreateOrderInput
-from domain.order.service import build_order, resolve_zone
+from domain.menu.pricing import resolve_unit_price, validate_variant
+from domain.order.models import MAX_LINES_PER_ORDER, CreateOrderInput, PendingOrderLineSnapshot
 
 logger = Logger()
 
@@ -34,6 +34,7 @@ logger = Logger()
 _order_repository = OrderRepository(get_config().table_name)
 _cart_repository = CartRepository(get_config().table_name)
 _menu_repository = MenuRepository(get_config().table_name)
+_payment_provider = get_payment_provider()
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -50,10 +51,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         status, body = not_found("route not found", request_id)
         return json_response(status, body)
 
-    except (ClientError, BotoCoreError, ValidationError):
+    except (ClientError, BotoCoreError, ValidationError, KeyError):
         # DynamoDBの一時エラーや契約外データによる例外を、共通エラーエンベロープに変換する
         # (docs/architecture.md §5.1)。クライアント入力由来のValidationErrorは各ハンドラ内で
         # 個別に捕捉して400へ変換しているため、ここに届くのはDB由来のものだけ。
+        # KeyError: PENDING_PAYMENT段階の注文(orderNumber未採番)にcancel_order()が
+        # 呼ばれた場合、get_order()がこのキー欠落で例外化する。PENDING_PAYMENT段階の
+        # キャンセル対応は今回のスコープ外のため、クラッシュさせず500で止める安全弁として扱う
+        # (将来Issue化して404/409へ整理する)。
         logger.exception("order-fn: unhandled error", extra={"routeKey": route_key})
         status, body = build_error("INTERNAL", "internal server error", request_id)
         return json_response(status, body)
@@ -102,48 +107,52 @@ def _handle_create_order(event: dict[str, Any], request_id: str) -> dict[str, An
             return json_response(status, body)
         products[cart_item.product_id] = product
 
-    # ステップ2: ゾーン別カウンタ予約。zoneはcategory+sizeだけで決まるため、商品情報は不要。
-    zone_counts: dict[Zone, int] = {}
+    # ステップ2: variant再検証・価格再計算(決済金額の確定)。ゾーン採番・明細作成は
+    # まだ行わない(決済が終わるまで、どのゾーンで何を作るか決めない設計。§12.1)。
+    # カート保存時のスナップショットを信用せず、ここでも再計算する(従来build_order()が
+    # 担っていた「最後の砦の価格チェック」の前半を、決済前のこの時点に前倒しする)。
+    total_price = 0
     for cart_item in cart_items:
-        zone = resolve_zone(cart_item.category, cart_item.variant.size)
-        zone_counts[zone] = zone_counts.get(zone, 0) + 1
+        product = products[cart_item.product_id]
+        try:
+            validate_variant(product, cart_item.variant)
+        except ValueError as exc:
+            status, body = build_error("VALIDATION_ERROR", str(exc), request_id)
+            return json_response(status, body)
+        if not product.available:
+            status, body = build_error(
+                "VALIDATION_ERROR",
+                f"product {cart_item.product_id!r} is not available",
+                request_id,
+            )
+            return json_response(status, body)
+        total_price += resolve_unit_price(product, cart_item.variant) * cart_item.quantity
 
-    now = datetime.now(UTC)
-    zone_seq_ends = {
-        zone: _order_repository.reserve_zone_sequence(input_.store_id, zone, count)
-        for zone, count in zone_counts.items()
-    }
-
-    # ステップ3: 注文番号予約。
-    order_number = _order_repository.reserve_order_number(
-        input_.store_id, now.strftime("%Y-%m-%d")
-    )
-    order_id = str(uuid.uuid4())
-
-    try:
-        order = build_order(
-            cart_items=cart_items,
-            products=products,
-            store_id=input_.store_id,
-            order_id=order_id,
-            order_number=order_number,
-            zone_seq_ends=zone_seq_ends,
-            now=now,
+    pending_lines = [
+        PendingOrderLineSnapshot(
+            line_id=f"{index:03d}",
+            product_id=cart_item.product_id,
+            name=cart_item.name,
+            category=cart_item.category,
+            variant=cart_item.variant,
+            quantity=cart_item.quantity,
         )
-    except ValueError as exc:
-        # ここで失敗すると予約済みのゾーン別カウンタ・注文番号は欠番になるが、実害はなく許容する
-        # (architecture.md §6.3の欠番許容の原則)。
-        status, body = build_error("VALIDATION_ERROR", str(exc), request_id)
-        return json_response(status, body)
+        for index, cart_item in enumerate(cart_items, start=1)
+    ]
 
-    # ステップ4: 全書き込み(TransactWriteItems)。カート明細も同一トランザクションで削除する。
-    cart_keys = [f"{ITEM_SORT_KEY_PREFIX}{item.item_id}" for item in cart_items]
+    # ステップ3: 仮注文(PENDING_PAYMENT)を作成する。注文番号・ゾーン別queueSeqは
+    # 決済成功後にpayment-fnが初めて確定する(欠番にしない。未決済で終わった注文のために
+    # 番号を消費しないため)。
+    now = datetime.now(UTC)
+    order_id = str(uuid.uuid4())
     try:
-        created = _order_repository.create_order(
-            order,
-            idempotency_key=idempotency_key,
+        pending = _order_repository.create_pending_payment_order(
+            order_id=order_id,
+            store_id=input_.store_id,
             session_id=input_.session_id,
-            cart_keys=cart_keys,
+            idempotency_key=idempotency_key,
+            lines=pending_lines,
+            total_price=total_price,
             now=now,
         )
     except IdempotencyConflict as exc:
@@ -152,7 +161,19 @@ def _handle_create_order(event: dict[str, Any], request_id: str) -> dict[str, An
             exc.order_id, exc.session_id, input_.session_id, request_id
         )
 
-    return json_response(201, created.model_dump(by_alias=True))
+    # ステップ4: 決済プロバイダにチェックアウトURLを発行してもらう。
+    # ここで失敗しても注文はPENDING_PAYMENTのまま残るが、欠番と同じく実害はないと判断している
+    # (docs/requirements.md §12.1.1の実装計画で明記済みの既知のトレードオフ)。
+    try:
+        checkout_url = _payment_provider.create_payment(order_id, total_price)
+    except PaymentProviderError:
+        logger.exception("order-fn: payment provider error", extra={"orderId": order_id})
+        status, body = build_error("INTERNAL", "failed to create payment", request_id)
+        return json_response(status, body)
+    _order_repository.set_checkout_url(order_id, checkout_url, now)
+
+    response = pending.model_copy(update={"checkout_url": checkout_url})
+    return json_response(201, response.model_dump(by_alias=True))
 
 
 def _handle_cancel_order(event: dict[str, Any], request_id: str) -> dict[str, Any]:
@@ -180,6 +201,8 @@ def _respond_with_existing_order(
 
     sessionIdが一致すれば既存注文を201で返す(クライアントからは新規作成と区別が付かなくてよい)。
     不一致なら、他セッションの注文内容が漏洩しないよう409で拒否する(architecture.md §7.3)。
+    get_order_or_pending()を使うため、既存注文がPENDING_PAYMENT段階でもOrderが確定済みでも
+    同じ経路で正しく返せる。
     """
     if existing_session_id != request_session_id:
         status, body = build_error(
@@ -187,12 +210,12 @@ def _respond_with_existing_order(
         )
         return json_response(status, body)
 
-    existing_order = _order_repository.get_order(order_id)
-    if existing_order is None:
+    existing = _order_repository.get_order_or_pending(order_id)
+    if existing is None:
         # IDEMPOTENCYレコードはあるのに注文本体が無い状態。TransactWriteItemsで両方同時に
         # 書き込んでいるため理論上起こらないはずのデータ不整合であり、隠さずそのまま伝播させる。
         raise RuntimeError(f"idempotency record exists but order {order_id!r} is missing")
-    return json_response(201, existing_order.model_dump(by_alias=True))
+    return json_response(201, existing.model_dump(by_alias=True))
 
 
 def _get_header(event: Mapping[str, Any], name: str) -> str | None:
