@@ -16,4 +16,19 @@ def get_payment_provider() -> PaymentProvider:
         from adapters.payment.fake_payment_client import FakePaymentProvider
 
         return FakePaymentProvider()
+    if provider_name == "paypay":
+        from adapters.payment.paypay_client import PayPayPaymentClient
+        from config import (
+            get_paypay_api_key_parameter_name,
+            get_paypay_api_secret_parameter_name,
+            get_paypay_production_mode,
+            get_paypay_redirect_url,
+        )
+
+        return PayPayPaymentClient(
+            api_key_parameter_name=get_paypay_api_key_parameter_name(),
+            api_secret_parameter_name=get_paypay_api_secret_parameter_name(),
+            redirect_url=get_paypay_redirect_url(),
+            production_mode=get_paypay_production_mode(),
+        )
     raise RuntimeError(f"unsupported PAYMENT_PROVIDER: {provider_name!r}")

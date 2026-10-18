@@ -20,6 +20,10 @@ dev = [
     "mypy",
     "ruff",
     "boto3-stubs[dynamodb]",
+    "paypayopa==1.0.9",
+    # paypayopaがpkg_resourcesに依存するため(setuptools 81でpkg_resourcesが削除された)。
+    # Lambda Layer側(services/layers/paypay-sdk/requirements.txt)にも同じ制約で含める。
+    "setuptools<81",
 ]
 # 実AWS dev環境への負荷テスト(scripts/load_test_peak.py)専用。
 # pytest/mypy/ruffの通常ループでは使わないため、devグループとは目的を分けて管理する。
