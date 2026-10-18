@@ -18,7 +18,7 @@ export interface AppStackProps extends StageStackProps {
 
 /**
  * スライス①（menu-fn）＋②（cart-fn）＋③（order-fn/status-fn）＋④（store-fn）を配線したapp-stack。
- * WebSocket/SQS/EventBridge/ConnectionTable/payment-fnは対象外。
+ * WebSocket/SQS/EventBridge/ConnectionTableは対象外。
  */
 export class AppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: AppStackProps) {

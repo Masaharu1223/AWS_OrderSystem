@@ -11,13 +11,18 @@ import math
 from collections.abc import Mapping
 
 from domain.fulfillment.models import OrderStatus, Zone
-from domain.order.models import Order, OrderLine
+from domain.order.models import Order, OrderLine, PendingPaymentOrder
 from domain.status.models import (
     OrderStatusLine,
     OrderStatusResponse,
+    PendingOrderStatusResponse,
     QueuePositionLine,
     QueuePositionResponse,
 )
+
+# PENDING_PAYMENT段階のポーリング間隔。決済画面からのリダイレクト直後に素早く確認できるよう、
+# 通常の間隔(5秒)より短くする。PAYMENT_FAILEDはNone(ポーリング終了、新規注文へ誘導)。
+_POLL_INTERVAL_PENDING_PAYMENT_SECONDS = 3
 
 # requirements.md §8.1: エスプレッソ抽出時間は学習対象から除外した固定値。
 _ESPRESSO_EXTRACTION_SECONDS = 25
@@ -59,6 +64,21 @@ def compute_poll_after_seconds(
     ):
         return _POLL_INTERVAL_CONGESTED_SECONDS
     return _POLL_INTERVAL_ACTIVE_SECONDS
+
+
+def build_pending_order_status(pending: PendingPaymentOrder) -> PendingOrderStatusResponse:
+    """GET /orders/{orderId} のレスポンスを組み立てる(決済確定前、明細がまだ無い段階)。"""
+    poll_after_seconds = (
+        _POLL_INTERVAL_PENDING_PAYMENT_SECONDS if pending.status == "PENDING_PAYMENT" else None
+    )
+    return PendingOrderStatusResponse(
+        order_id=pending.order_id,
+        status=pending.status,
+        total_price=pending.total_price,
+        checkout_url=pending.checkout_url,
+        updated_at=pending.updated_at,
+        poll_after_seconds=poll_after_seconds,
+    )
 
 
 def build_order_status(

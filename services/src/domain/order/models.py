@@ -9,7 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 from pydantic.alias_generators import to_camel
 
-from domain.fulfillment.models import LineStatus, OrderStatus, Zone
+from domain.fulfillment.models import LineStatus, OrderStatus, PrePaymentOrderStatus, Zone
 from domain.fulfillment.service import derive_order_status
 from domain.menu.models import Category, Size, Variant
 
@@ -21,6 +21,7 @@ MAX_LINES_PER_ORDER = 20
 ORDER_PARTITION_KEY_PREFIX = "ORDER#"
 ORDER_META_SORT_KEY = "META"
 ORDER_LINE_SORT_KEY_PREFIX = "LINE#"
+PENDING_LINE_SORT_KEY_PREFIX = "PENDINGLINE#"
 
 # カテゴリ+サイズ→ゾーンの振り分け表(docs/requirements.md §7.1・§7.2の図をそのまま辞書化)。
 # order-fnが注文確定時に明細ごとにこの表を引いてzoneを確定する(resolve_zone、service.py参照)。
@@ -97,3 +98,42 @@ class CreateOrderInput(BaseModel):
 
     session_id: str
     store_id: str
+
+
+class PendingOrderLineSnapshot(BaseModel):
+    """DynamoDBのPENDINGLINE#<lineId>行に対応する内部表現(決済確定前のカートのスナップショット)。
+
+    zone/queue_seq/statusはまだ確定していない(決済成功後、status-fnがbuild_order()で
+    初めて確定する)。CartItemと同じ4フィールド(product_id/category/variant/quantity)+
+    nameを持つため、build_order()はこのクラスとCartItemの両方から呼べる
+    (domain/order/service.pyの_PriceableLine Protocol参照)。
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+    line_id: str
+    product_id: str
+    name: str
+    category: Category
+    variant: Variant
+    quantity: int = Field(ge=1)
+
+
+class PendingPaymentOrder(BaseModel):
+    """決済確定前(PENDING_PAYMENT/PAYMENT_FAILED)の注文の軽量表現。
+
+    明細(OrderLine)がまだ存在しないため、Orderとは別のモデルとして扱う
+    (docs/requirements.md §6.2・§12.1.1: この2状態は導出ロジックの対象外で、
+    META行へ直接書き込む値のまま維持する)。
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+    order_id: str
+    store_id: str
+    session_id: str
+    status: PrePaymentOrderStatus
+    total_price: int
+    checkout_url: str | None = None
+    created_at: str
+    updated_at: str

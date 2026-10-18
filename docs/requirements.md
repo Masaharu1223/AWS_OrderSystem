@@ -1,8 +1,8 @@
 # 要件定義書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 1.9  
+**バージョン**: 1.10  
 **作成日**: 2026-06-30  
-**最終更新**: 2026-10-17（アプリ内決済導入時のプロバイダ抽象化方針を決定・追記。詳細は§12.1.1、更新履歴は§15を参照）  
+**最終更新**: 2026-10-18（決済確定方式をWebhookからポーリング確認方式に修正。詳細は§12.1、更新履歴は§15を参照）  
 
 **ステータス**: 確定（実装着手可能）
 
@@ -599,7 +599,7 @@ GSI は **GSI1（注文の導出ステータス別一覧）+ GSI2（ゾーン別
 
 | 機能                                        | 状態         | 布石の内容                                                                                                                                                                                                 |
 | ----------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| アプリ内決済（PayPay for Developers、将来Stripe等へ拡張可能） | 将来         | `PENDING_PAYMENT` / `PAYMENT_FAILED` ステータス定義。`payment-fn` の雛形Lambda、CDK コメント。プロバイダ固有の実装は`adapters/payment/`配下に閉じ込め、共通インターフェース経由で切り替え可能にする（詳細は§12.1.1）。実装時はWebhookのイベントID等をDynamoDBに保存し、再送による二重更新を防止する                                                                |
+| アプリ内決済（PayPay for Developers、将来Stripe等へ拡張可能） | 将来         | `PENDING_PAYMENT` / `PAYMENT_FAILED` ステータス定義。`status-fn`が決済確認・確定の両方を担う（Webhookは使わない。詳細は§12.1）。プロバイダ固有の実装は`adapters/payment/`配下に閉じ込め、共通インターフェース経由で切り替え可能にする（詳細は§12.1.1）。同時アクセスによる二重確定はDynamoDBの`ConditionExpression`で防止する                                                                |
 | Amazon Forecast ETA                       | 将来（データ蓄積後） | フェーズ 1 の EMA 実装を Forecast に差し替え可能な設計                                                                                                                                                                  |
 | Web Push 通知                               | 将来         | バックグラウンドでの通知。Service Worker + FCM                                                                                                                                                                     |
 | 個人別スタッフアカウント                              | 将来         | Cognito ユーザープールは流用可能                                                                                                                                                                                  |
@@ -618,19 +618,21 @@ MVP では「商品選択（メニュー・カート）→ 注文 → `STORE_ACC
 
 1. `POST /orders` → 注文を `PENDING_PAYMENT`（決済待ち）状態で作成し、`orderId` を返す
 2. クライアントを決済プロバイダのチェックアウト画面へリダイレクトする
-3. 決済完了 → 決済プロバイダからのWebhook通知を `payment-fn` が受信 → 注文を `STORE_ACCEPTED` に更新する
-4. クライアントは既存のHTTPポーリング（`GET /orders/{orderId}`、`pollAfterSeconds`）でステータス変化を検知し、キュー位置の表示を開始する（WebSocketは導入しない方針。MVPで既にWebSocketからHTTPポーリングへ変更済みのため、決済導入時も同じ仕組みに乗せる。§14.13参照）
+3. 決済完了後、決済プロバイダはクライアントのブラウザを自アプリへリダイレクトして戻す。クライアントは既存のHTTPポーリング（`GET /orders/{orderId}`、`pollAfterSeconds`）を継続しており、そのたびに`status-fn`自身が決済プロバイダへ決済状況を問い合わせ（Get Payment Details相当のAPI）、完了していれば`STORE_ACCEPTED`へ確定する
+4. リダイレクトが届かない場合（ユーザーがアプリを閉じた等）でもポーリング自体はリダイレクトと無関係に動き続けているため、次回のポーリング時に`status-fn`が同様に確定を検知できる
 
+- **Webhookは使わない**: PayPay for Developersの公式Web Cashier統合フロー（2026-10-18確認）には、決済プロバイダからのWebhook通知を受信するステップが存在せず、リダイレクト＋ポーリング確認（上記3・4）が公式の推奨方式である。これに合わせ、当初検討していたWebhook受信専用Lambda（`payment-fn`）は導入せず、`status-fn`が確認・確定の両方を担う
 - 決済失敗時は `PAYMENT_FAILED` に遷移し、カート内容は保持する（再決済できるようにするため）
+- 複数のポーリングリクエストがほぼ同時に確定処理を試みても、DynamoDBの`ConditionExpression`（「まだ`PENDING_PAYMENT`のときだけ成功する」条件付き書き込み）により二重確定しない
 - 「商品選択」自体は決済の有無に関わらず共通のフローであり、決済ステップだけを注文確定と製造キュー投入の間に後付けで挟み込める設計とする（§14.1 の Cognito 格上げと同様、`order-fn` 自体の構造は変えずに済む）
 
 ### 12.1.1 決済プロバイダの抽象化方針（2026-10決定）
 
-アプリ内決済は特定の決済SaaSに固定せず、`adapters/payment/`配下に各プロバイダ固有の実装を閉じ込める設計とする。`domain`層・`handlers`層（`payment-fn`本体）は、使用中の決済SaaSが何であるかを一切知らない状態を保つ。
+アプリ内決済は特定の決済SaaSに固定せず、`adapters/payment/`配下に各プロバイダ固有の実装を閉じ込める設計とする。`domain`層・`handlers`層（決済確認・確定を担う`status-fn`）は、使用中の決済SaaSが何であるかを一切知らない状態を保つ。
 
-- **初回導入プロバイダ**: PayPay for Developers（システム利用料が無料のため、個人開発規模での導入コストが最も低い）。Stripeは将来の選択肢・併用候補として引き続き想定する（§12.1表の通り、Webhook連携のシンプルさに利点がある）
-- **共通インターフェース**: `PaymentProvider`（`adapters/payment/base.py`、`typing.Protocol`で定義）。公開するメソッドは`create_payment(order_id, amount_yen) -> checkout_url`と`verify_and_parse_notification(raw_body, headers) -> PaymentResult`の2つのみ
-- **戻り値の統一**: 各プロバイダ固有のフィールド名・イベント種別・署名方式の違いは、すべて`adapters/payment/{provider}_client.py`の内部で吸収する。呼び出し元には`domain/payment/models.py`で定義する共通の`PaymentResult`（`order_id`, `outcome: "succeeded" | "failed"`）の形に変換してから返す
+- **初回導入プロバイダ**: PayPay for Developers（システム利用料が無料のため、個人開発規模での導入コストが最も低い）。Stripeは将来の選択肢・併用候補として引き続き想定する
+- **共通インターフェース**: `PaymentProvider`（`adapters/payment/base.py`、`typing.Protocol`で定義）。公開するメソッドは`create_payment(order_id, amount_yen) -> checkout_url`と`get_payment_status(order_id) -> PaymentOutcome | None`の2つのみ（`None`は「まだ未確定、引き続きポーリング」を意味する）
+- **戻り値の統一**: 各プロバイダ固有のフィールド名・ステータスコードの違いは、すべて`adapters/payment/{provider}_client.py`の内部で吸収する。呼び出し元には`domain/payment/models.py`で定義する共通の`PaymentOutcome`（`"succeeded" | "failed"`）の形に変換してから返す
 - **プロバイダの選択**: Lambdaのコールドスタート時に、環境変数（`PAYMENT_PROVIDER`、CDKから注入）でどの実装を使うか1つ選ぶ。プロバイダの切り替えはコード変更ではなくCDK側の設定変更で行う
 - **秘密情報の管理**: プロバイダごとに独立したSSMパラメータ名を使う（例: `/mobile-order/{stage}/payment/paypay/api-key`、`/mobile-order/{stage}/payment/stripe/secret-key`）。未使用プロバイダの秘密情報が残っていても他プロバイダの動作に影響しない
 - **契約テスト**: 全プロバイダ実装（テスト・ローカル開発用のフェイク実装を含む）に対して同一のテストケースを実行する仕組み（`tests/adapters/payment/test_contract.py`相当）を用意し、「戻り値の形が約束通りか」を型チェック（`mypy`）だけでなく実行時のテストでも保証する
@@ -834,6 +836,7 @@ Phase C・Aは §14.12・§14.13 の決定（`queueSeq`同期採番・ポーリ�
 
 | バージョン | 日付 | 内容 |
 | --- | --- | --- |
+| 1.10 | 2026-10-18 | PayPay for Developersの公式Web Cashier API仕様を確認した結果、決済確定方式をWebhook受信からリダイレクト＋ポーリング確認方式に修正（§12.1・§12.1.1）。Webhook受信専用Lambda（`payment-fn`）を廃止し、既存の`status-fn`が決済確認・確定の両方を担う設計に変更した。`PaymentProvider`の`verify_and_parse_notification()`を`get_payment_status()`に置き換えた |
 | 1.9 | 2026-10-17 | アプリ内決済導入時のプロバイダ抽象化方針を決定・追記。初回導入プロバイダをPayPay for Developersとし、`adapters/payment/`配下に各決済SaaS固有の実装を閉じ込める設計とした（新設§12.1.1）。あわせて§12.1の決済導入フロー記述が、MVPでのWebSocket廃止・HTTPポーリング移行〔v1.8〕に追従していなかった矛盾を修正した |
 | 1.8 | 2026-07-31 | [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映。ゾーン別受付順（`queueSeq`）の採番方式をSQS FIFOからDynamoDB原子カウンタによる`order-fn`内同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`可変間隔〕へ変更。これに伴いmachine-router-fn/zone-consumer-fn/SQS FIFO×4/order-aggregator-fn/WebSocket一式をMVPスコープ外に変更〔§4.3, §4.4, §7.2, §7.2.1, §7.3, §8.1, §8.2, §9, §10.2, §10.5, §10.6, §11.1, §11.2, §11.3, §12, §13, §14.2, §14.6, §14.8, §14.8.1, 新設§14.12, §14.13〕 |
 

@@ -1,6 +1,13 @@
 from typing import Any
 
-from domain.order.models import ZONE_BY_CATEGORY_SIZE, CreateOrderInput, Order, OrderLine
+from domain.order.models import (
+    ZONE_BY_CATEGORY_SIZE,
+    CreateOrderInput,
+    Order,
+    OrderLine,
+    PendingOrderLineSnapshot,
+    PendingPaymentOrder,
+)
 
 
 def _base_line_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -106,3 +113,36 @@ def test_create_order_input_parses_camel_case_body() -> None:
     parsed = CreateOrderInput(**body)
     assert parsed.session_id == "sess-abc"
     assert parsed.store_id == "store-01"
+
+
+def test_pending_order_line_snapshot_parses_dynamodb_item() -> None:
+    item = {
+        "lineId": "001",
+        "productId": "prod-001",
+        "name": "カフェラテ",
+        "category": "espresso",
+        "variant": {"temperature": "hot", "size": "L"},
+        "quantity": 2,
+        # PK/SK等のDynamoDB専用キーは無視される(OrderLineと同じextra="ignore")。
+        "PK": "ORDER#ord-xyz",
+        "SK": "PENDINGLINE#001",
+    }
+    line = PendingOrderLineSnapshot(**item)
+    assert line.line_id == "001"
+    assert line.quantity == 2
+
+
+def test_pending_payment_order_defaults_checkout_url_to_none() -> None:
+    pending = PendingPaymentOrder(
+        orderId="ord-xyz",
+        storeId="store-01",
+        sessionId="sess-abc",
+        status="PENDING_PAYMENT",
+        totalPrice=980,
+        createdAt="2026-07-12T12:00:00Z",
+        updatedAt="2026-07-12T12:00:00Z",
+    )
+    assert pending.checkout_url is None
+
+    with_url = pending.model_copy(update={"checkout_url": "https://pay.example/checkout/ord-xyz"})
+    assert with_url.checkout_url == "https://pay.example/checkout/ord-xyz"

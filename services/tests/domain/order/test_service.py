@@ -4,7 +4,7 @@ import pytest
 
 from domain.cart.models import CartItem
 from domain.menu.models import Product
-from domain.order.models import MAX_LINES_PER_ORDER
+from domain.order.models import MAX_LINES_PER_ORDER, PendingOrderLineSnapshot
 from domain.order.service import build_order, resolve_zone
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=UTC)
@@ -221,6 +221,35 @@ def test_build_order_rejects_disallowed_variant() -> None:
             zone_seq_ends={"A": 1},
             now=NOW,
         )
+
+
+def test_build_order_accepts_pending_order_line_snapshot() -> None:
+    # status-fn側は決済確定前のスナップショット(PendingOrderLineSnapshot)を渡す。
+    # CartItemと同じ4フィールド(product_id/category/variant/quantity)+nameを持つため、
+    # build_order()は型を区別せずそのまま受け付けられる(_PriceableLine Protocol)。
+    line = PendingOrderLineSnapshot(
+        lineId="001",
+        productId="prod-001",
+        name="カフェラテ",
+        category="espresso",
+        variant={"temperature": "hot", "size": "L"},
+        quantity=1,
+    )
+    products = {"prod-001": _product()}
+
+    order = build_order(
+        cart_items=[line],
+        products=products,
+        store_id="store-01",
+        order_id="ord-xyz",
+        order_number=1,
+        zone_seq_ends={"A": 1},
+        now=NOW,
+    )
+
+    assert len(order.lines) == 1
+    assert order.lines[0].product_id == "prod-001"
+    assert order.lines[0].zone == "A"
 
 
 def test_build_order_sets_created_at_and_updated_at_from_now() -> None:

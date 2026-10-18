@@ -1,5 +1,6 @@
 import importlib
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,7 +9,9 @@ import pytest
 from moto import mock_aws
 
 from adapters.cart_repository import CartRepository
+from adapters.order_repository import OrderRepository
 from domain.cart.models import CartItem
+from domain.order.models import Order, OrderLine
 
 _TABLE_NAME = "test-table"
 _SESSION_ID = "sess-abc"
@@ -120,13 +123,52 @@ def _put_cart_item(
 
 
 def _reload_handler(monkeypatch: pytest.MonkeyPatch) -> Any:
-    # handlers.order はコールドスタート最適化のためモジュールレベルでRepositoryを生成する。
-    # モックしたテーブルに対して束縛し直すため、TABLE_NAME設定後にreloadする。
+    # handlers.order はコールドスタート最適化のためモジュールレベルでRepository・決済
+    # プロバイダを生成する。モックしたテーブルに対して束縛し直すため、環境変数設定後にreloadする。
     monkeypatch.setenv("TABLE_NAME", _TABLE_NAME)
+    monkeypatch.setenv("PAYMENT_PROVIDER", "fake")
     import handlers.order as module
 
     importlib.reload(module)
     return module
+
+
+def _seed_store_accepted_order(order_id: str = "ord-seed") -> None:
+    """cancel系テスト用に、決済確定済み(STORE_ACCEPTED)の注文を直接書き込む。
+
+    POST /ordersはPENDING_PAYMENTまでしか作らなくなった(status-fnが無いと明細を
+    確定できない)ため、cancel_order()のテストにはリポジトリを直接使って土台を用意する。
+    """
+    line = OrderLine(
+        lineId="001",
+        orderId=order_id,
+        orderNumber=1,
+        productId="prod-001",
+        name="カフェラテ",
+        category="espresso",
+        variant={"temperature": "hot", "size": "L"},
+        quantity=1,
+        unitPrice=550,
+        zone="A",
+        status="WAITING",
+        queueSeq=1,
+        createdAt="2026-07-12T12:00:00Z",
+        updatedAt="2026-07-12T12:00:00Z",
+    )
+    order = Order(
+        orderId=order_id,
+        orderNumber=1,
+        storeId=_STORE_ID,
+        lines=[line],
+        createdAt="2026-07-12T12:00:00Z",
+    )
+    OrderRepository(_TABLE_NAME).create_order(
+        order,
+        idempotency_key=f"seed-{order_id}",
+        session_id="sess-seed",
+        cart_keys=[],
+        now=datetime(2026, 7, 12, 12, 0, 0, tzinfo=UTC),
+    )
 
 
 def _create_order_event(
@@ -216,7 +258,7 @@ def test_create_order_returns_400_when_product_unavailable(
 
 
 @mock_aws
-def test_create_order_returns_201_with_zone_and_queue_seq(
+def test_create_order_returns_201_pending_payment_with_checkout_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_table()
@@ -228,37 +270,16 @@ def test_create_order_returns_201_with_zone_and_queue_seq(
 
     assert response["statusCode"] == 201
     body = json.loads(response["body"])
-    assert body["storeId"] == _STORE_ID
-    assert body["status"] == "STORE_ACCEPTED"
-    assert len(body["lines"]) == 1
-    line = body["lines"][0]
-    assert line["zone"] == "A"  # espresso×L
-    assert line["queueSeq"] == 1
-    assert line["status"] == "WAITING"
-    assert line["unitPrice"] == 550  # 450 + 100(L)、カートのスナップショット(999)は使わない
+    assert body["status"] == "PENDING_PAYMENT"
+    assert body["totalPrice"] == 550  # 450 + 100(L)、カートのスナップショット(999)は使わない
+    # ゾーン採番・明細作成は決済成功後(status-fn)まで行わない。
+    assert "lines" not in body
+    # FakePaymentProvider.create_payment()が返すURL(adapters/payment/fake_payment_client.py)。
+    assert body["checkoutUrl"] == f"https://fake-payment.local/checkout/{body['orderId']}"
 
 
 @mock_aws
-def test_create_order_multi_zone_assigns_independent_queue_seq(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _create_table()
-    _put_product(**_LATTE)
-    _put_product(**_TEA)
-    _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
-    _put_cart_item(_SESSION_ID, "prod-014", "tea", "紅茶", "hot", "M")
-    order_handler = _reload_handler(monkeypatch)
-
-    response = order_handler.handler(_create_order_event(), _CONTEXT)
-
-    assert response["statusCode"] == 201
-    body = json.loads(response["body"])
-    zones = {line["zone"] for line in body["lines"]}
-    assert zones == {"A", "D"}  # espresso×L→A、tea×M→D
-
-
-@mock_aws
-def test_create_order_deletes_cart_items(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_order_does_not_delete_cart_items_yet(monkeypatch: pytest.MonkeyPatch) -> None:
     _create_table()
     _put_product(**_LATTE)
     _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
@@ -266,8 +287,10 @@ def test_create_order_deletes_cart_items(monkeypatch: pytest.MonkeyPatch) -> Non
 
     order_handler.handler(_create_order_event(), _CONTEXT)
 
+    # カートの消費は決済成功時(status-fnのfinalize_paid_order)まで行わない。
+    # 決済が失敗/中断してもお客様がカートをやり直せるようにするため。
     cart_repo = CartRepository(_TABLE_NAME)
-    assert cart_repo.list_items(_SESSION_ID) == []
+    assert len(cart_repo.list_items(_SESSION_ID)) == 1
 
 
 @mock_aws
@@ -280,12 +303,44 @@ def test_create_order_retry_with_same_idempotency_key_returns_same_order(
     order_handler = _reload_handler(monkeypatch)
 
     first = order_handler.handler(_create_order_event(idempotency_key="dup-key"), _CONTEXT)
-    # 2回目はカートが既に空だが、冪等キー一致の事前チェックで弾かれ空チェックまで進まない
+    # 2回目は冪等キー一致の事前チェックで弾かれ、カートの再検証までは進まない。
     second = order_handler.handler(_create_order_event(idempotency_key="dup-key"), _CONTEXT)
 
     assert first["statusCode"] == 201
     assert second["statusCode"] == 201
     assert json.loads(first["body"])["orderId"] == json.loads(second["body"])["orderId"]
+
+
+@mock_aws
+def test_create_order_returns_500_when_payment_provider_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_product(**_LATTE)
+    _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
+    order_handler = _reload_handler(monkeypatch)
+
+    from adapters.payment.base import PaymentProviderError
+
+    class _FailingProvider:
+        def create_payment(self, order_id: str, amount_yen: int) -> str:
+            raise PaymentProviderError("sandbox is down")
+
+        def verify_and_parse_notification(self, raw_body: str, headers: Any) -> Any:
+            raise NotImplementedError
+
+    order_handler._payment_provider = _FailingProvider()
+    fixed_order_id = "ord-fixed-for-test"
+    monkeypatch.setattr(order_handler.uuid, "uuid4", lambda: fixed_order_id)
+
+    response = order_handler.handler(_create_order_event(), _CONTEXT)
+
+    assert response["statusCode"] == 500
+    # 仮注文自体はPENDING_PAYMENTのまま残る(欠番と同じく実害なしとして許容する)。
+    pending = order_handler._order_repository.get_order_or_pending(str(fixed_order_id))
+    assert pending is not None
+    assert pending.status == "PENDING_PAYMENT"
+    assert pending.checkout_url is None
 
 
 @mock_aws
@@ -317,13 +372,10 @@ def test_cancel_order_returns_200_when_all_lines_waiting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_table()
-    _put_product(**_LATTE)
-    _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
     order_handler = _reload_handler(monkeypatch)
-    created = order_handler.handler(_create_order_event(), _CONTEXT)
-    order_id = json.loads(created["body"])["orderId"]
+    _seed_store_accepted_order("ord-cancel1")
 
-    response = order_handler.handler(_cancel_order_event(order_id), _CONTEXT)
+    response = order_handler.handler(_cancel_order_event("ord-cancel1"), _CONTEXT)
 
     assert response["statusCode"] == 200
     body = json.loads(response["body"])
@@ -336,21 +388,18 @@ def test_cancel_order_returns_409_when_a_line_is_not_waiting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_table()
-    _put_product(**_LATTE)
-    _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
     order_handler = _reload_handler(monkeypatch)
-    created = order_handler.handler(_create_order_event(), _CONTEXT)
-    order_id = json.loads(created["body"])["orderId"]
+    _seed_store_accepted_order("ord-cancel2")
 
     table = boto3.resource("dynamodb").Table(_TABLE_NAME)
     table.update_item(
-        Key={"PK": f"ORDER#{order_id}", "SK": "LINE#001"},
+        Key={"PK": "ORDER#ord-cancel2", "SK": "LINE#001"},
         UpdateExpression="SET #s = :preparing",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":preparing": "PREPARING"},
     )
 
-    response = order_handler.handler(_cancel_order_event(order_id), _CONTEXT)
+    response = order_handler.handler(_cancel_order_event("ord-cancel2"), _CONTEXT)
 
     assert response["statusCode"] == 409
     assert json.loads(response["body"])["error"]["code"] == "CONFLICT"
@@ -364,6 +413,24 @@ def test_cancel_order_returns_404_when_order_missing(monkeypatch: pytest.MonkeyP
     response = order_handler.handler(_cancel_order_event("does-not-exist"), _CONTEXT)
 
     assert response["statusCode"] == 404
+
+
+@mock_aws
+def test_cancel_order_returns_500_when_order_is_still_pending_payment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # PENDING_PAYMENT段階のキャンセル対応は未実装(スコープ外)。クラッシュはしないが
+    # 現状は500を返すだけの既知の制限であることを記録しておく(docs/requirements.md §12.1.1)。
+    _create_table()
+    _put_product(**_LATTE)
+    _put_cart_item(_SESSION_ID, "prod-001", "espresso", "カフェラテ", "hot", "L")
+    order_handler = _reload_handler(monkeypatch)
+    created = order_handler.handler(_create_order_event(), _CONTEXT)
+    order_id = json.loads(created["body"])["orderId"]
+
+    response = order_handler.handler(_cancel_order_event(order_id), _CONTEXT)
+
+    assert response["statusCode"] == 500
 
 
 # --- 未知のルート ---

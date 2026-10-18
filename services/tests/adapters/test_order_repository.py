@@ -10,8 +10,11 @@ from adapters.order_repository import (
     OrderNotCancellableError,
     OrderNotFoundError,
     OrderRepository,
+    PaymentAlreadyFinalizedError,
 )
-from domain.order.models import Order, OrderLine
+from domain.menu.models import Product
+from domain.order.models import Order, OrderLine, PendingOrderLineSnapshot, PendingPaymentOrder
+from domain.order.service import build_order
 
 _TABLE_NAME = "test-mobile-order-table"
 _STORE_ID = "store-01"
@@ -87,6 +90,34 @@ def _order(lines: list[OrderLine], **overrides: object) -> Order:
     }
     kwargs.update(overrides)
     return Order(**kwargs)
+
+
+def _pending_line(**overrides: object) -> PendingOrderLineSnapshot:
+    kwargs: dict[str, object] = {
+        "lineId": "001",
+        "productId": "prod-001",
+        "name": "カフェラテ",
+        "category": "espresso",
+        "variant": {"temperature": "hot", "size": "L"},
+        "quantity": 1,
+    }
+    kwargs.update(overrides)
+    return PendingOrderLineSnapshot(**kwargs)
+
+
+def _product(**overrides: object) -> Product:
+    kwargs: dict[str, object] = {
+        "productId": "prod-001",
+        "category": "espresso",
+        "name": "カフェラテ",
+        "basePrice": 450,
+        "sizeDelta": {"S": 0, "M": 50, "L": 100},
+        "allowHot": True,
+        "allowIced": True,
+        "available": True,
+    }
+    kwargs.update(overrides)
+    return Product(**kwargs)
 
 
 def _put_cart_item(session_id: str, sort_key: str) -> None:
@@ -496,3 +527,238 @@ def test_handover_line_raises_conflict_when_not_ready() -> None:
     # まだWAITINGのまま(READYになっていない)状態で受渡検知が来た、誤検知のケース。
     with pytest.raises(LineTransitionConflictError):
         repo.handover_line("ord-handover2", "001", NOW)
+
+
+# --- create_pending_payment_order / set_checkout_url ---
+
+
+@mock_aws
+def test_create_pending_payment_order_writes_meta_and_pending_lines() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+
+    pending = repo.create_pending_payment_order(
+        order_id="ord-pending1",
+        store_id=_STORE_ID,
+        session_id="sess-p1",
+        idempotency_key="key-p1",
+        lines=[_pending_line(lineId="001"), _pending_line(lineId="002", productId="prod-014")],
+        total_price=980,
+        now=NOW,
+    )
+
+    assert pending.status == "PENDING_PAYMENT"
+    assert pending.checkout_url is None
+    assert pending.total_price == 980
+
+    fetched = repo.get_order_or_pending("ord-pending1")
+    assert isinstance(fetched, PendingPaymentOrder)
+    assert fetched.status == "PENDING_PAYMENT"
+
+    pending_lines = repo.get_pending_lines("ord-pending1")
+    assert [line.line_id for line in pending_lines] == ["001", "002"]
+
+    idempotency_record = repo.get_idempotency_record("key-p1")
+    assert idempotency_record is not None
+    assert idempotency_record.order_id == "ord-pending1"
+
+
+@mock_aws
+def test_create_pending_payment_order_raises_idempotency_conflict_on_key_reuse() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    repo.create_pending_payment_order(
+        order_id="ord-pending-a",
+        store_id=_STORE_ID,
+        session_id="sess-A",
+        idempotency_key="dup-key-p",
+        lines=[_pending_line()],
+        total_price=560,
+        now=NOW,
+    )
+
+    with pytest.raises(IdempotencyConflict) as exc_info:
+        repo.create_pending_payment_order(
+            order_id="ord-pending-b",
+            store_id=_STORE_ID,
+            session_id="sess-B",
+            idempotency_key="dup-key-p",
+            lines=[_pending_line()],
+            total_price=560,
+            now=NOW,
+        )
+
+    assert exc_info.value.order_id == "ord-pending-a"
+    assert repo.get_order_or_pending("ord-pending-b") is None
+
+
+@mock_aws
+def test_set_checkout_url_updates_meta() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    repo.create_pending_payment_order(
+        order_id="ord-pending2",
+        store_id=_STORE_ID,
+        session_id="sess-p2",
+        idempotency_key="key-p2",
+        lines=[_pending_line()],
+        total_price=560,
+        now=NOW,
+    )
+
+    repo.set_checkout_url("ord-pending2", "https://pay.example/checkout/ord-pending2", NOW)
+
+    fetched = repo.get_order_or_pending("ord-pending2")
+    assert isinstance(fetched, PendingPaymentOrder)
+    assert fetched.checkout_url == "https://pay.example/checkout/ord-pending2"
+
+
+# --- get_order_or_pending ---
+
+
+@mock_aws
+def test_get_order_or_pending_returns_none_when_missing() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+
+    assert repo.get_order_or_pending("does-not-exist") is None
+
+
+@mock_aws
+def test_get_order_or_pending_returns_order_once_store_accepted() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-accepted", zone="A", queueSeq=1)],
+        orderId="ord-accepted",
+    )
+    repo.create_order(
+        order, idempotency_key="key-oap1", session_id="sess-oap1", cart_keys=[], now=NOW
+    )
+
+    fetched = repo.get_order_or_pending("ord-accepted")
+
+    assert isinstance(fetched, Order)
+    assert fetched.status == "STORE_ACCEPTED"
+
+
+# --- finalize_paid_order / mark_payment_failed ---
+
+
+def _finalized_order(pending: PendingPaymentOrder, repo: OrderRepository) -> Order:
+    """get_pending_lines()からbuild_order()を経てOrderを組み立てる(status-fnの実処理と同じ手順)。"""
+    pending_lines = repo.get_pending_lines(pending.order_id)
+    products = {line.product_id: _product(productId=line.product_id) for line in pending_lines}
+    zone_seq_end = repo.reserve_zone_sequence(pending.store_id, "A", len(pending_lines))
+    order_number = repo.reserve_order_number(pending.store_id, "2026-07-12")
+    return build_order(
+        cart_items=pending_lines,
+        products=products,
+        store_id=pending.store_id,
+        order_id=pending.order_id,
+        order_number=order_number,
+        zone_seq_ends={"A": zone_seq_end},
+        now=NOW,
+    )
+
+
+@mock_aws
+def test_finalize_paid_order_promotes_to_store_accepted_and_cleans_up() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    _put_cart_item("sess-f1", "ITEM#prod-001#hot#L")
+    pending = repo.create_pending_payment_order(
+        order_id="ord-finalize1",
+        store_id=_STORE_ID,
+        session_id="sess-f1",
+        idempotency_key="key-f1",
+        lines=[_pending_line(lineId="001")],
+        total_price=560,
+        now=NOW,
+    )
+    order = _finalized_order(pending, repo)
+
+    result = repo.finalize_paid_order(pending, order, NOW)
+
+    assert result.status == "STORE_ACCEPTED"
+    fetched = repo.get_order_or_pending("ord-finalize1")
+    assert isinstance(fetched, Order)
+    assert fetched.status == "STORE_ACCEPTED"
+    assert [line.line_id for line in fetched.lines] == ["001"]
+
+    # PENDINGLINE行は削除され、通常のゾーン別一覧(GSI2)から見える状態になっている。
+    assert repo.get_pending_lines("ord-finalize1") == []
+    assert len(repo.list_zone_lines(_STORE_ID, "A")) == 1
+
+    # 注文が成立した今この瞬間に初めてカートが消費される。
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    cart_response = table.get_item(Key={"PK": "CART#sess-f1", "SK": "ITEM#prod-001#hot#L"})
+    assert "Item" not in cart_response
+
+
+@mock_aws
+def test_finalize_paid_order_raises_when_already_finalized() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    pending = repo.create_pending_payment_order(
+        order_id="ord-finalize2",
+        store_id=_STORE_ID,
+        session_id="sess-f2",
+        idempotency_key="key-f2",
+        lines=[_pending_line()],
+        total_price=560,
+        now=NOW,
+    )
+    order = _finalized_order(pending, repo)
+    repo.finalize_paid_order(pending, order, NOW)
+
+    # 同じWebhookがもう一度届いたケース(二重通知)。
+    with pytest.raises(PaymentAlreadyFinalizedError):
+        repo.finalize_paid_order(pending, order, NOW)
+
+
+@mock_aws
+def test_mark_payment_failed_transitions_and_keeps_cart() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    _put_cart_item("sess-f3", "ITEM#prod-001#hot#L")
+    pending = repo.create_pending_payment_order(
+        order_id="ord-failed1",
+        store_id=_STORE_ID,
+        session_id="sess-f3",
+        idempotency_key="key-f3",
+        lines=[_pending_line()],
+        total_price=560,
+        now=NOW,
+    )
+
+    repo.mark_payment_failed(pending, NOW)
+
+    fetched = repo.get_order_or_pending("ord-failed1")
+    assert isinstance(fetched, PendingPaymentOrder)
+    assert fetched.status == "PAYMENT_FAILED"
+
+    # 再決済できるよう、カートは消費されずに残る。
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    cart_response = table.get_item(Key={"PK": "CART#sess-f3", "SK": "ITEM#prod-001#hot#L"})
+    assert "Item" in cart_response
+
+
+@mock_aws
+def test_mark_payment_failed_raises_when_already_finalized() -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    pending = repo.create_pending_payment_order(
+        order_id="ord-failed2",
+        store_id=_STORE_ID,
+        session_id="sess-f4",
+        idempotency_key="key-f4",
+        lines=[_pending_line()],
+        total_price=560,
+        now=NOW,
+    )
+    repo.mark_payment_failed(pending, NOW)
+
+    # 失敗通知の後に成功通知が届く、または失敗通知が2回届くケース。
+    with pytest.raises(PaymentAlreadyFinalizedError):
+        repo.mark_payment_failed(pending, NOW)
