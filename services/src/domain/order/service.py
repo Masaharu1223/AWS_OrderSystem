@@ -15,7 +15,7 @@ from domain.order.models import MAX_LINES_PER_ORDER, ZONE_BY_CATEGORY_SIZE, Orde
 class _PriceableLine(Protocol):
     """build_order()が明細1件に要求する最小限の形。
 
-    CartItem(order-fn、決済前)とPendingOrderLineSnapshot(payment-fn、決済確定後)の
+    CartItem(order-fn、決済前)とPendingOrderLineSnapshot(status-fn、決済確定後)の
     どちらも、この形を満たすためそのまま渡せる(構造的部分型。継承関係は不要)。
     """
 

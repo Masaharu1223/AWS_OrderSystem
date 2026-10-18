@@ -103,7 +103,7 @@ class CreateOrderInput(BaseModel):
 class PendingOrderLineSnapshot(BaseModel):
     """DynamoDBのPENDINGLINE#<lineId>行に対応する内部表現(決済確定前のカートのスナップショット)。
 
-    zone/queue_seq/statusはまだ確定していない(決済成功後、payment-fnがbuild_order()で
+    zone/queue_seq/statusはまだ確定していない(決済成功後、status-fnがbuild_order()で
     初めて確定する)。CartItemと同じ4フィールド(product_id/category/variant/quantity)+
     nameを持つため、build_order()はこのクラスとCartItemの両方から呼べる
     (domain/order/service.pyの_PriceableLine Protocol参照)。

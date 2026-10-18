@@ -646,7 +646,7 @@ def test_get_order_or_pending_returns_order_once_store_accepted() -> None:
 
 
 def _finalized_order(pending: PendingPaymentOrder, repo: OrderRepository) -> Order:
-    """get_pending_lines()からbuild_order()を経てOrderを組み立てる(payment-fnの実処理と同じ手順)。"""
+    """get_pending_lines()からbuild_order()を経てOrderを組み立てる(status-fnの実処理と同じ手順)。"""
     pending_lines = repo.get_pending_lines(pending.order_id)
     products = {line.product_id: _product(productId=line.product_id) for line in pending_lines}
     zone_seq_end = repo.reserve_zone_sequence(pending.store_id, "A", len(pending_lines))

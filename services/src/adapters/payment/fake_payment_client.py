@@ -6,35 +6,26 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-
-from adapters.payment.base import PaymentNotificationError, PaymentSignatureError
-from domain.payment.models import PaymentResult
-
-_VALID_SIGNATURE = "valid"
+from domain.payment.models import PaymentOutcome
 
 
 class FakePaymentProvider:
-    """単純なJSONボディ(`{"orderId": str, "outcome": str}`)をそのまま解釈する偽実装。
+    """インメモリの辞書で決済結果を模擬する偽実装。
 
-    `x-fake-signature`ヘッダの値で、署名検証の成功/失敗パスの両方を呼び出し側が模擬できる。
+    テスト側が`set_outcome()`で先に結果を仕込んでおくことで、`get_payment_status()`
+    がPayPayからの確認結果を返すのと同じ流れを再現できる。何も仕込んでいない注文は
+    「まだ未確定」を表すNoneを返す。
     """
+
+    def __init__(self) -> None:
+        self._outcomes: dict[str, PaymentOutcome] = {}
 
     def create_payment(self, order_id: str, amount_yen: int) -> str:
         return f"https://fake-payment.local/checkout/{order_id}"
 
-    def verify_and_parse_notification(
-        self, raw_body: str, headers: Mapping[str, str]
-    ) -> PaymentResult:
-        if headers.get("x-fake-signature") != _VALID_SIGNATURE:
-            raise PaymentSignatureError("invalid fake signature")
-        try:
-            payload = json.loads(raw_body)
-            order_id = str(payload["orderId"])
-            outcome = payload["outcome"]
-        except (json.JSONDecodeError, KeyError) as exc:
-            raise PaymentNotificationError("malformed fake notification body") from exc
-        if outcome not in ("succeeded", "failed"):
-            raise PaymentNotificationError(f"unknown outcome: {outcome!r}")
-        return PaymentResult(order_id=order_id, outcome=outcome)
+    def set_outcome(self, order_id: str, outcome: PaymentOutcome) -> None:
+        """テストから、指定した注文の決済結果を事前に設定する。"""
+        self._outcomes[order_id] = outcome
+
+    def get_payment_status(self, order_id: str) -> PaymentOutcome | None:
+        return self._outcomes.get(order_id)

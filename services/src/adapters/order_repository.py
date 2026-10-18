@@ -175,7 +175,7 @@ class OrderRepository:
         """決済確定前の仮注文を1回のTransactWriteItemsで作成する。
 
         明細(PENDINGLINE)はカートのスナップショットとして保存するだけで、ゾーン・queueSeqは
-        まだ決めない(決済成功後にpayment-fnのfinalize_paid_order()が初めて確定する)。
+        まだ決めない(決済成功後にstatus-fnのfinalize_paid_order()が初めて確定する)。
         冪等性の仕組み(IDEMPOTENCY Put、ConditionExpression=attribute_not_exists)は
         create_order()と全く同じものを使い回す。
         """
@@ -387,7 +387,7 @@ class OrderRepository:
     def get_pending_lines(self, order_id: str) -> list[PendingOrderLineSnapshot]:
         """PENDINGLINE#行をQueryして返す(_list_lines()と同じクエリ・ページネーションパターン)。
 
-        payment-fnがfinalize_paid_order()を呼ぶ前に、確定すべき明細の一覧を読むために使う。
+        status-fnがfinalize_paid_order()を呼ぶ前に、確定すべき明細の一覧を読むために使う。
         """
         items: list[dict[str, Any]] = []
         condition = Key("PK").eq(_order_partition_key(order_id)) & Key("SK").begins_with(

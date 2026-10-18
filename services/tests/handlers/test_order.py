@@ -136,7 +136,7 @@ def _reload_handler(monkeypatch: pytest.MonkeyPatch) -> Any:
 def _seed_store_accepted_order(order_id: str = "ord-seed") -> None:
     """cancel系テスト用に、決済確定済み(STORE_ACCEPTED)の注文を直接書き込む。
 
-    POST /ordersはPENDING_PAYMENTまでしか作らなくなった(payment-fnが無いと明細を
+    POST /ordersはPENDING_PAYMENTまでしか作らなくなった(status-fnが無いと明細を
     確定できない)ため、cancel_order()のテストにはリポジトリを直接使って土台を用意する。
     """
     line = OrderLine(
@@ -272,7 +272,7 @@ def test_create_order_returns_201_pending_payment_with_checkout_url(
     body = json.loads(response["body"])
     assert body["status"] == "PENDING_PAYMENT"
     assert body["totalPrice"] == 550  # 450 + 100(L)、カートのスナップショット(999)は使わない
-    # ゾーン採番・明細作成は決済成功後(payment-fn)まで行わない。
+    # ゾーン採番・明細作成は決済成功後(status-fn)まで行わない。
     assert "lines" not in body
     # FakePaymentProvider.create_payment()が返すURL(adapters/payment/fake_payment_client.py)。
     assert body["checkoutUrl"] == f"https://fake-payment.local/checkout/{body['orderId']}"
@@ -287,7 +287,7 @@ def test_create_order_does_not_delete_cart_items_yet(monkeypatch: pytest.MonkeyP
 
     order_handler.handler(_create_order_event(), _CONTEXT)
 
-    # カートの消費は決済成功時(payment-fnのfinalize_paid_order)まで行わない。
+    # カートの消費は決済成功時(status-fnのfinalize_paid_order)まで行わない。
     # 決済が失敗/中断してもお客様がカートをやり直せるようにするため。
     cart_repo = CartRepository(_TABLE_NAME)
     assert len(cart_repo.list_items(_SESSION_ID)) == 1

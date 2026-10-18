@@ -224,7 +224,7 @@ def test_build_order_rejects_disallowed_variant() -> None:
 
 
 def test_build_order_accepts_pending_order_line_snapshot() -> None:
-    # payment-fn側は決済確定前のスナップショット(PendingOrderLineSnapshot)を渡す。
+    # status-fn側は決済確定前のスナップショット(PendingOrderLineSnapshot)を渡す。
     # CartItemと同じ4フィールド(product_id/category/variant/quantity)+nameを持つため、
     # build_order()は型を区別せずそのまま受け付けられる(_PriceableLine Protocol)。
     line = PendingOrderLineSnapshot(

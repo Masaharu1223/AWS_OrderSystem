@@ -123,10 +123,23 @@ def _create_pending_order(order_id: str = "ord-pending", *, failed: bool = False
         repo.mark_payment_failed(pending, now)
 
 
+def _put_product(**attrs: Any) -> None:
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    table.put_item(Item={"PK": "MENU", "SK": f"PROD#{attrs['productId']}", **attrs})
+
+
+def _put_cart_item(session_id: str, sort_key: str) -> None:
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    table.put_item(
+        Item={"PK": f"CART#{session_id}", "SK": sort_key, "productId": "prod-001", "quantity": 1}
+    )
+
+
 def _reload_handler(monkeypatch: pytest.MonkeyPatch) -> Any:
-    # handlers.status はコールドスタート最適化のためモジュールレベルでRepositoryを生成する。
-    # モックしたテーブルに対して束縛し直すため、TABLE_NAME設定後にreloadする。
+    # handlers.status はコールドスタート最適化のためモジュールレベルでRepository・決済
+    # プロバイダを生成する。モックしたテーブルに対して束縛し直すため、環境変数設定後にreloadする。
     monkeypatch.setenv("TABLE_NAME", _TABLE_NAME)
+    monkeypatch.setenv("PAYMENT_PROVIDER", "fake")
     import handlers.status as module
 
     importlib.reload(module)
@@ -281,6 +294,100 @@ def test_get_order_status_returns_payment_failed_and_stops_polling(
     body = json.loads(response["body"])
     assert body["status"] == "PAYMENT_FAILED"
     assert body["pollAfterSeconds"] is None
+
+
+# --- PENDING_PAYMENT時の決済確認・確定(Webhookではなくポーリングで確認する) ---
+
+
+@mock_aws
+def test_get_order_status_finalizes_order_when_payment_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_product(
+        productId="prod-001",
+        category="espresso",
+        name="カフェラテ",
+        basePrice=450,
+        sizeDelta={"S": 0, "M": 50, "L": 100},
+        allowHot=True,
+        allowIced=True,
+        available=True,
+    )
+    _put_cart_item("sess-pending", "ITEM#prod-001#hot#L")
+    _create_pending_order("ord-pay1")
+    status_handler = _reload_handler(monkeypatch)
+    status_handler._payment_provider.set_outcome("ord-pay1", "succeeded")
+
+    response = status_handler.handler(_get_status_event("ord-pay1"), _CONTEXT)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["status"] == "STORE_ACCEPTED"
+    assert len(body["lines"]) == 1
+    assert body["lines"][0]["zone"] == "A"  # espresso×L
+
+    # 注文が成立した今この瞬間に初めてカートが消費される。
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    cart_response = table.get_item(
+        Key={"PK": "CART#sess-pending", "SK": "ITEM#prod-001#hot#L"}
+    )
+    assert "Item" not in cart_response
+
+
+@mock_aws
+def test_get_order_status_marks_payment_failed_when_provider_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_cart_item("sess-pending", "ITEM#prod-001#hot#L")
+    _create_pending_order("ord-pay2")
+    status_handler = _reload_handler(monkeypatch)
+    status_handler._payment_provider.set_outcome("ord-pay2", "failed")
+
+    response = status_handler.handler(_get_status_event("ord-pay2"), _CONTEXT)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["status"] == "PAYMENT_FAILED"
+
+    # 再決済できるよう、カートは消費されずに残る。
+    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
+    cart_response = table.get_item(
+        Key={"PK": "CART#sess-pending", "SK": "ITEM#prod-001#hot#L"}
+    )
+    assert "Item" in cart_response
+
+
+@mock_aws
+def test_get_order_status_finalize_is_idempotent_across_repeated_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_product(
+        productId="prod-001",
+        category="espresso",
+        name="カフェラテ",
+        basePrice=450,
+        sizeDelta={"S": 0, "M": 50, "L": 100},
+        allowHot=True,
+        allowIced=True,
+        available=True,
+    )
+    _create_pending_order("ord-pay3")
+    status_handler = _reload_handler(monkeypatch)
+    status_handler._payment_provider.set_outcome("ord-pay3", "succeeded")
+
+    first = status_handler.handler(_get_status_event("ord-pay3"), _CONTEXT)
+    second = status_handler.handler(_get_status_event("ord-pay3"), _CONTEXT)
+
+    assert first["statusCode"] == 200
+    assert second["statusCode"] == 200  # 連続ポーリングでもエラーにはならない
+    assert json.loads(second["body"])["status"] == "STORE_ACCEPTED"
+
+    # ゾーン採番が2回走っていないこと(queueSeqが2重に進んでいない)を、別注文で確認する。
+    order_repository = OrderRepository(_TABLE_NAME)
+    assert order_repository.reserve_zone_sequence(_STORE_ID, "A", 1) == 2  # 1件目の次
 
 
 # --- GET /orders/{orderId}/queue-position ---

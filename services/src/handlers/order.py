@@ -141,7 +141,7 @@ def _handle_create_order(event: dict[str, Any], request_id: str) -> dict[str, An
     ]
 
     # ステップ3: 仮注文(PENDING_PAYMENT)を作成する。注文番号・ゾーン別queueSeqは
-    # 決済成功後にpayment-fnが初めて確定する(欠番にしない。未決済で終わった注文のために
+    # 決済成功後にstatus-fnが初めて確定する(欠番にしない。未決済で終わった注文のために
     # 番号を消費しないため)。
     now = datetime.now(UTC)
     order_id = str(uuid.uuid4())
