@@ -13,8 +13,12 @@ from adapters.http import json_response
 from adapters.order_repository import OrderRepository
 from config import get_config
 from domain.fulfillment.models import Zone
-from domain.order.models import Order
-from domain.status.service import build_order_status, build_queue_position
+from domain.order.models import Order, PendingPaymentOrder
+from domain.status.service import (
+    build_order_status,
+    build_pending_order_status,
+    build_queue_position,
+)
 
 logger = Logger()
 
@@ -51,6 +55,11 @@ def _handle_get_order_status(event: dict[str, Any], request_id: str) -> dict[str
     order = _load_order(event, request_id)
     if isinstance(order, dict):
         return order
+    if isinstance(order, PendingPaymentOrder):
+        # 決済確定前(PENDING_PAYMENT/PAYMENT_FAILED)は明細が無いため、別の軽量な
+        # レスポンス形で返す(domain/status/models.py、docs/requirements.md §12.1.1)。
+        pending_response = build_pending_order_status(order)
+        return json_response(200, pending_response.model_dump(by_alias=True))
 
     positions, zone_avg_seconds = _compute_positions_and_zone_averages(order)
     response = build_order_status(order, positions, zone_avg_seconds)
@@ -61,20 +70,29 @@ def _handle_get_queue_position(event: dict[str, Any], request_id: str) -> dict[s
     order = _load_order(event, request_id)
     if isinstance(order, dict):
         return order
+    if isinstance(order, PendingPaymentOrder):
+        # 決済確定前はキュー位置という概念自体が存在しない。架空の値を作らず409で明示する。
+        status, body = build_error(
+            "CONFLICT", "order is not yet accepted (payment pending)", request_id
+        )
+        return json_response(status, body)
 
     positions, zone_avg_seconds = _compute_positions_and_zone_averages(order)
     response = build_queue_position(order, positions, zone_avg_seconds)
     return json_response(200, response.model_dump(by_alias=True))
 
 
-def _load_order(event: dict[str, Any], request_id: str) -> Order | dict[str, Any]:
+def _load_order(
+    event: dict[str, Any], request_id: str
+) -> Order | PendingPaymentOrder | dict[str, Any]:
     """orderIdから注文を取得する。存在しなければ404レスポンス(dict)をそのまま返す。
 
-    戻り値がOrderかdict(HTTPレスポンス)かで呼び出し側が処理を分岐する
+    決済確定前はPendingPaymentOrder、確定後はOrderを返す(get_order_or_pending()、
+    adapters/order_repository.py参照)。戻り値の型で呼び出し側が処理を分岐する
     (cart-fn/order-fnと同じ「見つからなければ即返す」パターンをGET系2ルートで共有するための形)。
     """
     order_id = (event.get("pathParameters") or {}).get("orderId", "")
-    order = _order_repository.get_order(order_id)
+    order = _order_repository.get_order_or_pending(order_id)
     if order is None:
         status, body = not_found(f"order {order_id} not found", request_id)
         return json_response(status, body)

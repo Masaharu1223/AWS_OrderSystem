@@ -9,7 +9,7 @@ import pytest
 from moto import mock_aws
 
 from adapters.order_repository import OrderRepository
-from domain.order.models import Order, OrderLine
+from domain.order.models import Order, OrderLine, PendingOrderLineSnapshot
 
 _TABLE_NAME = "test-table"
 _STORE_ID = "store-01"
@@ -96,6 +96,31 @@ def _create_order(order: Order, idempotency_key: str) -> None:
         cart_keys=[],
         now=datetime(2026, 7, 12, 12, 0, 0, tzinfo=UTC),
     )
+
+
+def _create_pending_order(order_id: str = "ord-pending", *, failed: bool = False) -> None:
+    repo = OrderRepository(_TABLE_NAME)
+    now = datetime(2026, 7, 12, 12, 0, 0, tzinfo=UTC)
+    pending = repo.create_pending_payment_order(
+        order_id=order_id,
+        store_id=_STORE_ID,
+        session_id="sess-pending",
+        idempotency_key=f"key-{order_id}",
+        lines=[
+            PendingOrderLineSnapshot(
+                lineId="001",
+                productId="prod-001",
+                name="カフェラテ",
+                category="espresso",
+                variant={"temperature": "hot", "size": "L"},
+                quantity=1,
+            )
+        ],
+        total_price=550,
+        now=now,
+    )
+    if failed:
+        repo.mark_payment_failed(pending, now)
 
 
 def _reload_handler(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -224,6 +249,40 @@ def test_get_order_status_all_lines_inactive_skips_position_and_stops_polling(
     assert body["pollAfterSeconds"] is None
 
 
+@mock_aws
+def test_get_order_status_returns_pending_payment_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _create_pending_order("ord-pending1")
+    status_handler = _reload_handler(monkeypatch)
+
+    response = status_handler.handler(_get_status_event("ord-pending1"), _CONTEXT)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["status"] == "PENDING_PAYMENT"
+    assert body["totalPrice"] == 550
+    assert body["pollAfterSeconds"] == 3  # 通常の5秒より短い、決済直後向けの間隔
+    assert "lines" not in body
+
+
+@mock_aws
+def test_get_order_status_returns_payment_failed_and_stops_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _create_pending_order("ord-pending2", failed=True)
+    status_handler = _reload_handler(monkeypatch)
+
+    response = status_handler.handler(_get_status_event("ord-pending2"), _CONTEXT)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["status"] == "PAYMENT_FAILED"
+    assert body["pollAfterSeconds"] is None
+
+
 # --- GET /orders/{orderId}/queue-position ---
 
 
@@ -254,6 +313,20 @@ def test_get_queue_position_returns_200_with_order_status_field(
     assert "status" not in body
     assert "name" not in body["lines"][0]
     assert "quantity" not in body["lines"][0]
+
+
+@mock_aws
+def test_get_queue_position_returns_409_when_pending_payment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _create_pending_order("ord-pending3")
+    status_handler = _reload_handler(monkeypatch)
+
+    response = status_handler.handler(_get_queue_position_event("ord-pending3"), _CONTEXT)
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"])["error"]["code"] == "CONFLICT"
 
 
 # --- 未知のルート ---
