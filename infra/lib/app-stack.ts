@@ -70,8 +70,22 @@ export class AppStack extends cdk.Stack {
     const paypayRedirectUrl = (this.node.tryGetContext('paypayRedirectUrl') as string | undefined)
       ?? 'http://localhost:3000/order';
 
+    // PayPayの加盟店申込み完了を待たずに決済確認フロー全体を動かせるよう、既定値は
+    // auto-approve(外部通信なし・常に即時成功)にしている(docs/requirements.md §12.1.1)。
+    // 申込み完了後は --context paymentProvider=paypay で上書きする。
+    const paymentProvider = (this.node.tryGetContext('paymentProvider') as string | undefined)
+      ?? 'auto-approve';
+    if (props.stage === 'prod' && paymentProvider === 'auto-approve') {
+      // auto-approveは実際にお金のやり取りが発生しない設定のため、本番での誤用をsynth時に
+      // 機械的にブロックする(将来の事故を防ぐ安価な保険、docs/requirements.md §12.1.1)。
+      throw new Error(
+        'PAYMENT_PROVIDER=auto-approve を prod で使うことはできません。'
+        + '--context paymentProvider=paypay を明示的に指定してください。',
+      );
+    }
+
     const paypayEnvironment = {
-      PAYMENT_PROVIDER: 'paypay',
+      PAYMENT_PROVIDER: paymentProvider,
       PAYPAY_API_KEY_PARAMETER_NAME: paypayApiKeyParameterName,
       PAYPAY_API_SECRET_PARAMETER_NAME: paypayApiSecretParameterName,
       PAYPAY_REDIRECT_URL: paypayRedirectUrl,

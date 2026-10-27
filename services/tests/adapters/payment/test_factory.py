@@ -2,6 +2,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from adapters.payment.auto_approve_payment_client import AutoApprovePaymentClient
 from adapters.payment.factory import get_payment_provider
 from adapters.payment.fake_payment_client import FakePaymentProvider
 from adapters.payment.paypay_client import PayPayPaymentClient
@@ -11,6 +12,14 @@ def test_get_payment_provider_returns_fake_when_configured(monkeypatch: pytest.M
     monkeypatch.setenv("PAYMENT_PROVIDER", "fake")
     provider = get_payment_provider()
     assert isinstance(provider, FakePaymentProvider)
+
+
+def test_get_payment_provider_returns_auto_approve_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAYMENT_PROVIDER", "auto-approve")
+    provider = get_payment_provider()
+    assert isinstance(provider, AutoApprovePaymentClient)
 
 
 @mock_aws

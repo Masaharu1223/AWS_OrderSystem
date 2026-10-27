@@ -1,8 +1,8 @@
 # 要件定義書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 1.10  
+**バージョン**: 1.11  
 **作成日**: 2026-06-30  
-**最終更新**: 2026-10-18（決済確定方式をWebhookからポーリング確認方式に修正。詳細は§12.1、更新履歴は§15を参照）  
+**最終更新**: 2026-10-27（PayPay加盟店申込み完了までの暫定運用としてauto-approveプロバイダを追加。詳細は§12.1.1、更新履歴は§15を参照）  
 
 **ステータス**: 確定（実装着手可能）
 
@@ -630,12 +630,13 @@ MVP では「商品選択（メニュー・カート）→ 注文 → `STORE_ACC
 
 アプリ内決済は特定の決済SaaSに固定せず、`adapters/payment/`配下に各プロバイダ固有の実装を閉じ込める設計とする。`domain`層・`handlers`層（決済確認・確定を担う`status-fn`）は、使用中の決済SaaSが何であるかを一切知らない状態を保つ。
 
-- **初回導入プロバイダ**: PayPay for Developers（システム利用料が無料のため、個人開発規模での導入コストが最も低い）。Stripeは将来の選択肢・併用候補として引き続き想定する
+- **初回導入プロバイダ**: PayPay for Developers。Stripeは将来の選択肢・併用候補として引き続き想定する。**(2026-10-19追記)** 当初「システム利用料が無料」と見込んでいたが、実際の加盟店申込みフォームでは決済システム利用料3.8%が明記されていた。また決済サーバの固定グローバルIPアドレスが必須で、現行のサーバーレス構成(VPC無し)には無いため別途NAT Gateway等の構築が必要となる。これらはPayPay本番導入そのものを妨げるものではないが、個人開発の現段階で加盟店申込みを完了させる負担が大きいと判断し、下記のauto-approveプロバイダで暫定運用する
 - **共通インターフェース**: `PaymentProvider`（`adapters/payment/base.py`、`typing.Protocol`で定義）。公開するメソッドは`create_payment(order_id, amount_yen) -> checkout_url`と`get_payment_status(order_id) -> PaymentOutcome | None`の2つのみ（`None`は「まだ未確定、引き続きポーリング」を意味する）
 - **戻り値の統一**: 各プロバイダ固有のフィールド名・ステータスコードの違いは、すべて`adapters/payment/{provider}_client.py`の内部で吸収する。呼び出し元には`domain/payment/models.py`で定義する共通の`PaymentOutcome`（`"succeeded" | "failed"`）の形に変換してから返す
 - **プロバイダの選択**: Lambdaのコールドスタート時に、環境変数（`PAYMENT_PROVIDER`、CDKから注入）でどの実装を使うか1つ選ぶ。プロバイダの切り替えはコード変更ではなくCDK側の設定変更で行う
 - **秘密情報の管理**: プロバイダごとに独立したSSMパラメータ名を使う（例: `/mobile-order/{stage}/payment/paypay/api-key`、`/mobile-order/{stage}/payment/stripe/secret-key`）。未使用プロバイダの秘密情報が残っていても他プロバイダの動作に影響しない
 - **契約テスト**: 全プロバイダ実装（テスト・ローカル開発用のフェイク実装を含む）に対して同一のテストケースを実行する仕組み（`tests/adapters/payment/test_contract.py`相当）を用意し、「戻り値の形が約束通りか」を型チェック（`mypy`）だけでなく実行時のテストでも保証する
+- **暫定運用プロバイダ(`auto-approve`)**: PayPayの加盟店申込み完了を待たずに決済確認フロー全体（PENDING_PAYMENT作成→ポーリング→確定）を動かせるよう追加した3つ目のプロバイダ。外部通信を一切行わず、常に即時決済成功として扱う。`order-fn`/`status-fn`のコードパスはPayPay実装と完全に同一のものを通る。**実際にお金のやり取りが発生しない設定のため、本番(`prod`)環境での使用はCDK側でsynth時にエラーとしてブロックする**。PayPayの加盟店申込みが完了し次第、環境変数を`paypay`に切り替える(コード変更不要)
 
 ---
 
@@ -836,6 +837,7 @@ Phase C・Aは §14.12・§14.13 の決定（`queueSeq`同期採番・ポーリ�
 
 | バージョン | 日付 | 内容 |
 | --- | --- | --- |
+| 1.11 | 2026-10-27 | PayPayの加盟店申込みフォームを実際に確認した結果、「システム利用料無料」の前提が誤り（3.8%）であったこと、決済サーバの固定グローバルIPが必須なこと等が判明した。個人開発の現段階では申込み完了の負担が大きいため、PaymentProviderに3つ目の実装`auto-approve`（外部通信なし・常に即時決済成功）を追加し、申込み完了を待たずに決済確認フロー全体を動かせるようにした（§12.1.1）。本番環境での誤用はCDK側でブロックする |
 | 1.10 | 2026-10-18 | PayPay for Developersの公式Web Cashier API仕様を確認した結果、決済確定方式をWebhook受信からリダイレクト＋ポーリング確認方式に修正（§12.1・§12.1.1）。Webhook受信専用Lambda（`payment-fn`）を廃止し、既存の`status-fn`が決済確認・確定の両方を担う設計に変更した。`PaymentProvider`の`verify_and_parse_notification()`を`get_payment_status()`に置き換えた |
 | 1.9 | 2026-10-17 | アプリ内決済導入時のプロバイダ抽象化方針を決定・追記。初回導入プロバイダをPayPay for Developersとし、`adapters/payment/`配下に各決済SaaS固有の実装を閉じ込める設計とした（新設§12.1.1）。あわせて§12.1の決済導入フロー記述が、MVPでのWebSocket廃止・HTTPポーリング移行〔v1.8〕に追従していなかった矛盾を修正した |
 | 1.8 | 2026-07-31 | [Issue #7](https://github.com/Masaharu1223/AWS_OrderSystem/issues/7)・[Issue #8](https://github.com/Masaharu1223/AWS_OrderSystem/issues/8) の決定を反映。ゾーン別受付順（`queueSeq`）の採番方式をSQS FIFOからDynamoDB原子カウンタによる`order-fn`内同期採番へ変更、リアルタイム通知をWebSocketからHTTPポーリング〔`pollAfterSeconds`可変間隔〕へ変更。これに伴いmachine-router-fn/zone-consumer-fn/SQS FIFO×4/order-aggregator-fn/WebSocket一式をMVPスコープ外に変更〔§4.3, §4.4, §7.2, §7.2.1, §7.3, §8.1, §8.2, §9, §10.2, §10.5, §10.6, §11.1, §11.2, §11.3, §12, §13, §14.2, §14.6, §14.8, §14.8.1, 新設§14.12, §14.13〕 |

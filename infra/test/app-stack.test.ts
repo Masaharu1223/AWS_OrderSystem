@@ -67,7 +67,7 @@ describe('AppStack', () => {
       Environment: {
         Variables: Match.objectLike({
           POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-order-fn',
-          PAYMENT_PROVIDER: 'paypay',
+          PAYMENT_PROVIDER: 'auto-approve',
           PAYPAY_PRODUCTION_MODE: 'false',
         }),
       },
@@ -92,7 +92,7 @@ describe('AppStack', () => {
         Variables: Match.objectLike({
           POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-status-fn',
           LOG_LEVEL: 'WARNING',
-          PAYMENT_PROVIDER: 'paypay',
+          PAYMENT_PROVIDER: 'auto-approve',
         }),
       },
     });
@@ -423,5 +423,41 @@ describe('AppStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 0);
     template.resourceCountIs('AWS::SQS::Queue', 0);
     template.resourceCountIs('AWS::Events::Rule', 0);
+  });
+});
+
+describe('AppStack paymentProviderコンテキスト', () => {
+  // CFNスタック名は英数字とハイフンのみ(/^[A-Za-z][A-Za-z0-9-]*$/)のため、contextの値を
+  // そのままIDに使わず、テストごとに一意なラベルを明示的に渡す。
+  function buildAppStack(label: string, stage: 'dev' | 'prod', context?: Record<string, string>) {
+    const app = new cdk.App({ context });
+    const env = { account: '123456789012', region: 'ap-northeast-1' };
+    const stateful = new StatefulStack(app, `TestStateful-${label}`, { stage, env });
+    return new AppStack(app, `TestApp-${label}`, {
+      stage,
+      env,
+      table: stateful.table,
+      staffUserPool: stateful.staffUserPool,
+      staffUserPoolClient: stateful.staffUserPoolClient,
+    });
+  }
+
+  test('paymentProviderコンテキストでpaypayに上書きできる', () => {
+    const overridden = buildAppStack('override', 'dev', { paymentProvider: 'paypay' });
+    const overriddenTemplate = Template.fromStack(overridden);
+    overriddenTemplate.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-order-fn',
+      Environment: {
+        Variables: Match.objectLike({ PAYMENT_PROVIDER: 'paypay' }),
+      },
+    });
+  });
+
+  test('stage=prodでauto-approve(既定値)のままだとsynthがエラーになる', () => {
+    expect(() => buildAppStack('prod-default', 'prod')).toThrow(/auto-approve/);
+  });
+
+  test('stage=prodでもpaymentProviderをpaypayに明示すればエラーにならない', () => {
+    expect(() => buildAppStack('prod-override', 'prod', { paymentProvider: 'paypay' })).not.toThrow();
   });
 });

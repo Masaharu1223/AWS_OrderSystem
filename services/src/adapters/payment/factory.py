@@ -16,6 +16,10 @@ def get_payment_provider() -> PaymentProvider:
         from adapters.payment.fake_payment_client import FakePaymentProvider
 
         return FakePaymentProvider()
+    if provider_name == "auto-approve":
+        from adapters.payment.auto_approve_payment_client import AutoApprovePaymentClient
+
+        return AutoApprovePaymentClient()
     if provider_name == "paypay":
         from adapters.payment.paypay_client import PayPayPaymentClient
         from config import (
