@@ -2,8 +2,8 @@
 # CDKがDockerバンドリングでこのディレクトリをpip installし、Layerとして配布する
 # (Powertools Layerはaws-lambda-powertoolsのみを供給するため、paypayopaは別Layerが必要)。
 #
-# setuptools<81: paypayopaがpkg_resourcesをimportしているが、setuptools 81以降では
-# pkg_resourcesが削除されているため、古いバージョンに固定しないとLambda起動時に
-# ModuleNotFoundErrorになる(services/pyproject.tomlのdev依存コメントと同じ制約)。
+# setuptoolsは意図的に含めない。paypayopaはimport時にpkg_resourcesを要求するが、
+# それを満たすために古いsetuptools(<81。81以降でpkg_resources自体が削除された)を
+# 入れると、そちらが既知の脆弱性を持つ。adapters/payment/paypay_client.py側で
+# 最小限のスタブをsys.modulesに差し込んで解決しているため、ここでは不要。
 paypayopa==1.0.9
-setuptools<81

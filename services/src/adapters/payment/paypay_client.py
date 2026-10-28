@@ -12,10 +12,30 @@ PayPay公式のWeb Cashier統合フローはWebhookではなくリダイレク�
 
 from __future__ import annotations
 
+import sys
+import types
 from typing import Any
 
 import boto3
-from paypayopa import Client
+
+try:
+    import pkg_resources  # noqa: F401
+except ModuleNotFoundError:
+    # paypayopaはバージョン文字列取得(未使用のget_version()内)のためだけにpkg_resourcesを
+    # importしている。これに対応する唯一の方法である古いsetuptools(<81。81以降で
+    # pkg_resources自体が削除された)を依存に加えると、そちらが既知の脆弱性を持ち
+    # pip-auditに引っかかる。実際に呼ぶ関数はget_version()の外では使われないため、
+    # importが通りさえすればよい最小限のスタブをここで自前に用意し、脆弱なパッケージを
+    # 一切インストールせずに済ませる。
+    _pkg_resources_stub = types.ModuleType("pkg_resources")
+
+    class _DistributionNotFound(Exception):
+        pass
+
+    _pkg_resources_stub.DistributionNotFound = _DistributionNotFound  # type: ignore[attr-defined]
+    sys.modules["pkg_resources"] = _pkg_resources_stub
+
+from paypayopa import Client  # noqa: E402
 
 from adapters.payment.base import PaymentProviderError
 from domain.payment.models import PaymentOutcome
