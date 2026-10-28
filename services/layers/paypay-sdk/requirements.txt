@@ -1,0 +1,9 @@
+# order-fn/status-fn専用のLambda Layer(docs/requirements.md §12.1.1)。
+# CDKがDockerバンドリングでこのディレクトリをpip installし、Layerとして配布する
+# (Powertools Layerはaws-lambda-powertoolsのみを供給するため、paypayopaは別Layerが必要)。
+#
+# setuptoolsは意図的に含めない。paypayopaはimport時にpkg_resourcesを要求するが、
+# それを満たすために古いsetuptools(<81。81以降でpkg_resources自体が削除された)を
+# 入れると、そちらが既知の脆弱性を持つ。adapters/payment/paypay_client.py側で
+# 最小限のスタブをsys.modulesに差し込んで解決しているため、ここでは不要。
+paypayopa==1.0.9

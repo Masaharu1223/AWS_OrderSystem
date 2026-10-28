@@ -20,6 +20,10 @@ dev = [
     "mypy",
     "ruff",
     "boto3-stubs[dynamodb]",
+    "paypayopa==1.0.9",
+    # setuptools<81は意図的に追加しない。paypayopaがimport時にpkg_resourcesを要求するが、
+    # 古いsetuptoolsを入れるとそちら自体が既知の脆弱性を持つため、adapters/payment/
+    # paypay_client.py側で最小限のスタブをsys.modulesに差し込んで解決している。
 ]
 # 実AWS dev環境への負荷テスト(scripts/load_test_peak.py)専用。
 # pytest/mypy/ruffの通常ループでは使わないため、devグループとは目的を分けて管理する。

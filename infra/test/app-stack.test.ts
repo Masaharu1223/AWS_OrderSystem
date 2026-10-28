@@ -58,7 +58,7 @@ describe('AppStack', () => {
     expect(cartFn.Properties.Layers).toHaveLength(1);
   });
 
-  test('order-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・Powertools Layer1個を持つ', () => {
+  test('order-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・Powertools+PayPay SDK Layer2個を持つ', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       FunctionName: 'MobileOrder-dev-order-fn',
       Runtime: 'python3.12',
@@ -67,6 +67,8 @@ describe('AppStack', () => {
       Environment: {
         Variables: Match.objectLike({
           POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-order-fn',
+          PAYMENT_PROVIDER: 'auto-approve',
+          PAYPAY_PRODUCTION_MODE: 'false',
         }),
       },
     });
@@ -76,10 +78,11 @@ describe('AppStack', () => {
       (f) => (f as { Properties: { FunctionName?: string } }).Properties.FunctionName
         === 'MobileOrder-dev-order-fn',
     ) as { Properties: { Layers?: unknown[] } };
-    expect(orderFn.Properties.Layers).toHaveLength(1);
+    // Powertools Layer(AWS管理) + PaypaySdkLayer(自前ビルド)の2個。
+    expect(orderFn.Properties.Layers).toHaveLength(2);
   });
 
-  test('status-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・LOG_LEVEL=WARNINGを持つ', () => {
+  test('status-fn LambdaがPython3.12/arm64・正しいハンドラ文字列・LOG_LEVEL=WARNING・Layer2個を持つ', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       FunctionName: 'MobileOrder-dev-status-fn',
       Runtime: 'python3.12',
@@ -89,9 +92,17 @@ describe('AppStack', () => {
         Variables: Match.objectLike({
           POWERTOOLS_SERVICE_NAME: 'MobileOrder-dev-status-fn',
           LOG_LEVEL: 'WARNING',
+          PAYMENT_PROVIDER: 'auto-approve',
         }),
       },
     });
+
+    const fns = template.findResources('AWS::Lambda::Function');
+    const statusFn = Object.values(fns).find(
+      (f) => (f as { Properties: { FunctionName?: string } }).Properties.FunctionName
+        === 'MobileOrder-dev-status-fn',
+    ) as { Properties: { Layers?: unknown[] } };
+    expect(statusFn.Properties.Layers).toHaveLength(2);
   });
 
   test('status-fnのロググループはdevで7日保持', () => {
@@ -356,6 +367,37 @@ describe('AppStack', () => {
     expect(JSON.stringify(resources[0])).toMatch(/handover-api-key/);
   });
 
+  test.each([
+    ['order-fn', 'MobileOrder-dev-order-fn'],
+    ['status-fn', 'MobileOrder-dev-status-fn'],
+  ])('%sのIAMポリシー: SSM GetParameter系はPayPayのAPIキー・シークレット2パラメータだけにスコープされる', (
+    _label,
+    functionName,
+  ) => {
+    const statements = policyStatementsFor(functionName);
+    const ssmStatements = statements.filter((stmt) => {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      return actions.some((a) => typeof a === 'string' && a.startsWith('ssm:'));
+    });
+
+    // grantRead()を2回(APIキー・シークレット)呼んでいるが、CDKが1つのStatementに統合するか
+    // どうかは実装詳細のため、Statement数ではなく全ssm系Statementの合計リソース数で検証する。
+    expect(ssmStatements.length).toBeGreaterThan(0);
+    for (const stmt of ssmStatements) {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      for (const action of actions) {
+        expect(action).toMatch(/^ssm:(DescribeParameters|GetParameter|GetParameterHistory|GetParameters)$/);
+      }
+    }
+    const resources = ssmStatements.flatMap((stmt) => (
+      Array.isArray(stmt.Resource) ? stmt.Resource : [stmt.Resource]
+    )) as unknown[];
+    expect(resources).toHaveLength(2);
+    const resourceText = JSON.stringify(resources);
+    expect(resourceText).toMatch(/payment\/paypay\/api-key/);
+    expect(resourceText).toMatch(/payment\/paypay\/api-secret/);
+  });
+
   test('X-Ray書き込み以外、どのIAMポリシーもResource="*"を持たない', () => {
     const policies = template.findResources('AWS::IAM::Policy');
     const allStatements = Object.values(policies).flatMap(
@@ -381,5 +423,41 @@ describe('AppStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 0);
     template.resourceCountIs('AWS::SQS::Queue', 0);
     template.resourceCountIs('AWS::Events::Rule', 0);
+  });
+});
+
+describe('AppStack paymentProviderコンテキスト', () => {
+  // CFNスタック名は英数字とハイフンのみ(/^[A-Za-z][A-Za-z0-9-]*$/)のため、contextの値を
+  // そのままIDに使わず、テストごとに一意なラベルを明示的に渡す。
+  function buildAppStack(label: string, stage: 'dev' | 'prod', context?: Record<string, string>) {
+    const app = new cdk.App({ context });
+    const env = { account: '123456789012', region: 'ap-northeast-1' };
+    const stateful = new StatefulStack(app, `TestStateful-${label}`, { stage, env });
+    return new AppStack(app, `TestApp-${label}`, {
+      stage,
+      env,
+      table: stateful.table,
+      staffUserPool: stateful.staffUserPool,
+      staffUserPoolClient: stateful.staffUserPoolClient,
+    });
+  }
+
+  test('paymentProviderコンテキストでpaypayに上書きできる', () => {
+    const overridden = buildAppStack('override', 'dev', { paymentProvider: 'paypay' });
+    const overriddenTemplate = Template.fromStack(overridden);
+    overriddenTemplate.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-order-fn',
+      Environment: {
+        Variables: Match.objectLike({ PAYMENT_PROVIDER: 'paypay' }),
+      },
+    });
+  });
+
+  test('stage=prodでauto-approve(既定値)のままだとsynthがエラーになる', () => {
+    expect(() => buildAppStack('prod-default', 'prod')).toThrow(/auto-approve/);
+  });
+
+  test('stage=prodでもpaymentProviderをpaypayに明示すればエラーにならない', () => {
+    expect(() => buildAppStack('prod-override', 'prod', { paymentProvider: 'paypay' })).not.toThrow();
   });
 });

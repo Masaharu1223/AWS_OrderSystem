@@ -29,3 +29,36 @@ def get_handover_api_key_parameter_name() -> str:
     if not parameter_name:
         raise RuntimeError("HANDOVER_API_KEY_PARAMETER_NAME environment variable is required")
     return parameter_name
+
+
+def get_paypay_api_key_parameter_name() -> str:
+    """PayPay APIキーが保管されているSSMパラメータの名前を読む。
+
+    `PAYMENT_PROVIDER=paypay`のときだけ必要(order-fn/status-fnのみ)なので、
+    `get_handover_api_key_parameter_name()`と同じ理由でConfigには混ぜない。
+    """
+    parameter_name = os.environ.get("PAYPAY_API_KEY_PARAMETER_NAME")
+    if not parameter_name:
+        raise RuntimeError("PAYPAY_API_KEY_PARAMETER_NAME environment variable is required")
+    return parameter_name
+
+
+def get_paypay_api_secret_parameter_name() -> str:
+    """PayPay APIキーシークレットが保管されているSSMパラメータの名前を読む。"""
+    parameter_name = os.environ.get("PAYPAY_API_SECRET_PARAMETER_NAME")
+    if not parameter_name:
+        raise RuntimeError("PAYPAY_API_SECRET_PARAMETER_NAME environment variable is required")
+    return parameter_name
+
+
+def get_paypay_redirect_url() -> str:
+    """決済完了後にPayPayがユーザーを戻すリダイレクト先URL(web側)を読む。"""
+    redirect_url = os.environ.get("PAYPAY_REDIRECT_URL")
+    if not redirect_url:
+        raise RuntimeError("PAYPAY_REDIRECT_URL environment variable is required")
+    return redirect_url
+
+
+def get_paypay_production_mode() -> bool:
+    """PayPayの本番環境を使うかどうか(false ならサンドボックス)。"""
+    return os.environ.get("PAYPAY_PRODUCTION_MODE", "false").lower() == "true"
