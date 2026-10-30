@@ -115,12 +115,21 @@ export class AppStack extends cdk.Stack {
       handler: 'handlers.status.handler',
       environment: { TABLE_NAME: props.table.tableName, ...paypayEnvironment },
       extraLayers: [paypaySdkLayer],
-      // ポーリング専用の読み取りLambdaのためINFOログを抑え、ロググループも短期保持にして
-      // CloudWatch Logsコストを抑える(todo.md §1③のインフラタスク、architectの指摘)。
+      // 高頻度に呼ばれるポーリングエンドポイントのためINFOログを抑え、ロググループも短期保持
+      // にしてCloudWatch Logsコストを抑える(todo.md §1③のインフラタスク、architectの指摘)。
       logLevel: 'WARNING',
       logRetentionDays: props.stage === 'prod' ? 14 : 7,
     });
-    props.table.grantReadData(statusFn);
+    // status-fnは元々READ専用だったが、Webhook廃止・ポーリング確認方式への設計転換
+    // (docs/requirements.md §12.1)でPENDING_PAYMENT確定処理(_finalize())をここに移植した
+    // ため、ZONESEQ/ORDERNUMのUpdateItem・META/LINEのTransactWriteItemsが必要になった。
+    // moto上のテストではIAM検証が行われないため、この不足は実デプロイでしか気づけなかった
+    // (2026-10-28、devデプロイで実際に踏んで発覚)。
+    props.table.grantReadWriteData(statusFn);
+    statusFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:TransactWriteItems'],
+      resources: [props.table.tableArn],
+    }));
 
     const paypayApiKeyParameter = ssm.StringParameter.fromSecureStringParameterAttributes(
       this,

@@ -327,11 +327,28 @@ describe('AppStack', () => {
     expect(JSON.stringify(resources[0])).not.toMatch(/\/index\/\*/);
   });
 
-  test('status-fnのIAMポリシー: DynamoDB権限は読み取り専用アクションのみでテーブル本体+GSI(index/*)の2件だけにスコープされる', () => {
+  test('status-fnのIAMポリシー: grantReadWriteData由来のCRUDアクションはテーブル本体+GSI(index/*)の2件だけにスコープされる', () => {
+    // status-fnはPENDING_PAYMENT確定処理(_finalize())を担うため読み取り専用ではない
+    // (docs/requirements.md §12.1、2026-10-28devデプロイで書き込み権限不足が発覚し追加)。
     expectDynamoActionsMatch(
       policyStatementsFor('MobileOrder-dev-status-fn'),
-      /^dynamodb:(BatchGetItem|ConditionCheckItem|DescribeTable|GetItem|GetRecords|GetShardIterator|Query|Scan)$/,
+      /^dynamodb:(BatchGetItem|BatchWriteItem|ConditionCheckItem|DeleteItem|DescribeTable|GetItem|GetRecords|GetShardIterator|PutItem|Query|Scan|UpdateItem)$/,
     );
+  });
+
+  test('status-fnのIAMポリシー: dynamodb:TransactWriteItemsをテーブル本体のみ(GSIワイルドカードなし)の1件に個別付与している', () => {
+    const statements = policyStatementsFor('MobileOrder-dev-status-fn');
+    const transactWriteStatement = statements.find((stmt) => {
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      return actions.length === 1 && actions[0] === 'dynamodb:TransactWriteItems';
+    });
+
+    expect(transactWriteStatement).toBeDefined();
+    const resources = Array.isArray(transactWriteStatement!.Resource)
+      ? transactWriteStatement!.Resource
+      : [transactWriteStatement!.Resource];
+    expect(resources).toHaveLength(1);
+    expect(JSON.stringify(resources[0])).not.toMatch(/\/index\/\*/);
   });
 
   test('store-fnのIAMポリシー: grantReadWriteData由来のCRUDアクションはテーブル本体+GSI(index/*)の2件だけにスコープされる(TransactWriteItemsは付与しない)', () => {
