@@ -122,11 +122,21 @@ def fetch_staff_id_token(client_id: str) -> str:
     password = os.environ.get("STAFF_PASSWORD")
     if not username or not password:
         raise SystemExit("環境変数 STAFF_USERNAME / STAFF_PASSWORD を設定してください")
-    response = boto3.client("cognito-idp").initiate_auth(
-        ClientId=client_id,
-        AuthFlow="USER_PASSWORD_AUTH",
-        AuthParameters={"USERNAME": username, "PASSWORD": password},
-    )
+    cognito = boto3.client("cognito-idp")
+    try:
+        response = cognito.initiate_auth(
+            ClientId=client_id,
+            AuthFlow="USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": username, "PASSWORD": password},
+        )
+    except (
+        cognito.exceptions.NotAuthorizedException,
+        cognito.exceptions.UserNotFoundException,
+    ) as exc:
+        raise SystemExit(
+            f"店員ログインに失敗しました(STAFF_USERNAME={username})。"
+            "ユーザー名かパスワードを確認してください"
+        ) from exc
     result = response.get("AuthenticationResult")
     if result is None:
         # NEW_PASSWORD_REQUIREDなどのチャレンジが返った場合。スクリプトでは対応しない。
