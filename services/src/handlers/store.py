@@ -19,7 +19,11 @@ from pydantic.alias_generators import to_camel
 from adapters.errors import build_error, not_found
 from adapters.handover_auth import HandoverAuthenticator
 from adapters.http import json_response
-from adapters.order_repository import LineTransitionConflictError, OrderRepository
+from adapters.order_repository import (
+    LineBusyError,
+    LineTransitionConflictError,
+    OrderRepository,
+)
 from config import get_config, get_handover_api_key_parameter_name
 from domain.fulfillment.models import LineStatus, Zone
 from domain.fulfillment.service import is_allowed_line_status_transition
@@ -107,6 +111,13 @@ def _handle_update_line_status(event: dict[str, Any], request_id: str) -> dict[s
     except LineTransitionConflictError:
         status, body = build_error("CONFLICT", "line is not in the expected status", request_id)
         return json_response(status, body)
+    except LineBusyError:
+        # 送り直してもキャンセル等の書き込み中が続いた(勝敗が未確定)。409とは言えないので503。
+        logger.warning("store-fn: line busy after retries", extra={"orderId": order_id})
+        status, body = build_error(
+            "SERVICE_UNAVAILABLE", "line is being updated by another request", request_id
+        )
+        return json_response(status, body)
 
     response = LineStatusUpdateResponse(
         order_id=line.order_id,
@@ -133,6 +144,12 @@ def _handle_handover_line(event: dict[str, Any], request_id: str) -> dict[str, A
         line = _order_repository.handover_line(order_id, line_id, now)
     except LineTransitionConflictError:
         status, body = build_error("CONFLICT", "line is not READY", request_id)
+        return json_response(status, body)
+    except LineBusyError:
+        logger.warning("store-fn: line busy after retries", extra={"orderId": order_id})
+        status, body = build_error(
+            "SERVICE_UNAVAILABLE", "line is being updated by another request", request_id
+        )
         return json_response(status, body)
 
     response = LineHandoverResponse(

@@ -1,11 +1,15 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from adapters.order_repository import (
     IdempotencyConflict,
+    LineBusyError,
     LineTransitionConflictError,
     OrderNotCancellableError,
     OrderNotFoundError,
@@ -527,6 +531,190 @@ def test_handover_line_raises_conflict_when_not_ready() -> None:
     # まだWAITINGのまま(READYになっていない)状態で受渡検知が来た、誤検知のケース。
     with pytest.raises(LineTransitionConflictError):
         repo.handover_line("ord-handover2", "001", NOW)
+
+
+# --- TransactionConflictException の再試行(Issue #70) ---
+#
+# 実際のDynamoDBでは、キャンセル(TransactWriteItems)の書き込み中に同じ明細へ単発の
+# UpdateItemが届くと、条件式を評価する前にTransactionConflictExceptionで拒否される。
+# motoはこれを再現しないため、update_itemを差し替えて「最初のN回だけ競合エラー」を起こす。
+
+
+def _transaction_conflict_error() -> ClientError:
+    return ClientError(
+        {
+            "Error": {
+                "Code": "TransactionConflictException",
+                "Message": "Transaction is ongoing for the item",
+            }
+        },
+        "UpdateItem",
+    )
+
+
+def _fail_first_calls_with_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: OrderRepository,
+    times: int,
+    before_raise: Callable[[], None] | None = None,
+) -> list[int]:
+    """repo._table.update_itemを、最初の`times`回だけ競合エラーにする差し替えに置き換える。
+
+    `times`回を超えた呼び出しは本物(moto)のupdate_itemへ渡す。`before_raise`は競合エラーを
+    送出する直前に呼ばれ、「相手のトランザクションが実はその後に完了した」状況を作るのに使う。
+    戻り値のリストには呼び出し回数が1件ずつ記録される(何回送ったかの確認用)。
+    """
+    real_update_item = repo._table.update_item
+    calls: list[int] = []
+
+    def fake_update_item(**kwargs: Any) -> Any:
+        calls.append(len(calls) + 1)
+        if len(calls) <= times:
+            if before_raise is not None:
+                before_raise()
+            raise _transaction_conflict_error()
+        return real_update_item(**kwargs)
+
+    monkeypatch.setattr(repo._table, "update_item", fake_update_item)
+    return calls
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """再試行前の待ち時間を記録する(テストを実際には待たせない)。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("adapters.order_repository.time.sleep", sleeps.append)
+    return sleeps
+
+
+@mock_aws
+def test_update_line_status_retries_after_transaction_conflict_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-retry1", zone="A", queueSeq=1)], orderId="ord-retry1"
+    )
+    repo.create_order(order, idempotency_key="key-r1", session_id="sess-r1", cart_keys=[], now=NOW)
+    sleeps = _record_sleeps(monkeypatch)
+    calls = _fail_first_calls_with_conflict(monkeypatch, repo, times=1)
+
+    # 相手のトランザクション(キャンセル)が結局失敗した場合: 送り直した更新が通る。
+    updated = repo.update_line_status("ord-retry1", "001", "WAITING", "PREPARING", NOW)
+
+    assert updated.status == "PREPARING"
+    assert len(calls) == 2
+    assert sleeps == [0.05]
+
+
+@mock_aws
+def test_update_line_status_returns_conflict_when_cancel_completed_during_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-retry2", zone="A", queueSeq=1)], orderId="ord-retry2"
+    )
+    repo.create_order(order, idempotency_key="key-r2", session_id="sess-r2", cart_keys=[], now=NOW)
+    sleeps = _record_sleeps(monkeypatch)
+    # 競合エラーを返したその裏で、キャンセルが完了した(明細はCANCELLEDになる)。
+    _fail_first_calls_with_conflict(
+        monkeypatch, repo, times=1, before_raise=lambda: repo.cancel_order("ord-retry2", NOW)
+    )
+
+    # 送り直すと今度は条件式が評価され、「もうWAITINGではない」= 409相当になる。
+    with pytest.raises(LineTransitionConflictError):
+        repo.update_line_status("ord-retry2", "001", "WAITING", "PREPARING", NOW)
+
+    assert sleeps == [0.05]
+    order_after = repo.get_order("ord-retry2")
+    assert order_after is not None
+    assert order_after.lines[0].status == "CANCELLED"
+
+
+@mock_aws
+def test_update_line_status_raises_busy_after_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-retry3", zone="A", queueSeq=1)], orderId="ord-retry3"
+    )
+    repo.create_order(order, idempotency_key="key-r3", session_id="sess-r3", cart_keys=[], now=NOW)
+    sleeps = _record_sleeps(monkeypatch)
+    calls = _fail_first_calls_with_conflict(monkeypatch, repo, times=99)
+
+    # 最初の1回 + 送り直し2回 = 3回とも競合 → まだ勝敗が決まっていないので503相当。
+    with pytest.raises(LineBusyError):
+        repo.update_line_status("ord-retry3", "001", "WAITING", "PREPARING", NOW)
+
+    assert len(calls) == 3
+    assert sleeps == [0.05, 0.1]
+
+
+@mock_aws
+def test_update_line_status_does_not_retry_other_client_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    sleeps = _record_sleeps(monkeypatch)
+    calls: list[int] = []
+
+    def fake_update_item(**kwargs: Any) -> Any:
+        calls.append(1)
+        raise ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"
+        )
+
+    monkeypatch.setattr(repo._table, "update_item", fake_update_item)
+
+    # 競合以外のエラーは再試行せず、そのまま送出する(従来どおり500になる)。
+    with pytest.raises(ClientError):
+        repo.update_line_status("ord-x", "001", "WAITING", "PREPARING", NOW)
+
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+@mock_aws
+def test_handover_line_retries_after_transaction_conflict_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    order = _order(
+        [_line(lineId="001", orderId="ord-retry4", zone="A", queueSeq=1)], orderId="ord-retry4"
+    )
+    repo.create_order(order, idempotency_key="key-r4", session_id="sess-r4", cart_keys=[], now=NOW)
+    repo.update_line_status("ord-retry4", "001", "WAITING", "PREPARING", NOW)
+    repo.update_line_status("ord-retry4", "001", "PREPARING", "READY", NOW)
+    sleeps = _record_sleeps(monkeypatch)
+    calls = _fail_first_calls_with_conflict(monkeypatch, repo, times=1)
+
+    updated = repo.handover_line("ord-retry4", "001", NOW)
+
+    assert updated.status == "HANDED_OVER"
+    assert len(calls) == 2
+    assert sleeps == [0.05]
+
+
+@mock_aws
+def test_handover_line_raises_busy_after_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    repo = OrderRepository(_TABLE_NAME)
+    sleeps = _record_sleeps(monkeypatch)
+    calls = _fail_first_calls_with_conflict(monkeypatch, repo, times=99)
+
+    with pytest.raises(LineBusyError):
+        repo.handover_line("ord-retry5", "001", NOW)
+
+    assert len(calls) == 3
+    assert sleeps == [0.05, 0.1]
 
 
 # --- create_pending_payment_order / set_checkout_url ---
