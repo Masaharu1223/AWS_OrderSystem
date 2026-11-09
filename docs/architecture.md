@@ -241,6 +241,7 @@ def add_item(in_: AddItemInput) -> Cart: ...
 | `CONFLICT` | 409 | 状態遷移違反・冪等キー衝突・楽観ロック失敗 |
 | `TOO_MANY_REQUESTS` | 429 | スロットリング |
 | `INTERNAL` | 500 | 想定外エラー |
+| `SERVICE_UNAVAILABLE` | 503 | 別のトランザクションが書き込み中で、少し待って送り直しても処理できなかった（勝敗が未確定。§7.5、Issue #70） |
 
 ### 5.2 共通の値オブジェクト
 
@@ -467,8 +468,8 @@ v1.0 の `PATCH /orders/{orderId}/status`（注文単位）は廃止し、明細
 
 ```
 GET   /stores/{storeId}/zones/{zone}/lines                     → 200 { "lines": [ LineCard ], "pollAfterSeconds": 3 }（ポーリング対象、§9）
-PATCH /orders/{orderId}/lines/{lineId}/status                  → 200 Line | 409   body: { "fromStatus": "WAITING", "toStatus": "PREPARING" }
-PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 409（外部システム専用。Cognitoではなく別認証、下記参照）
+PATCH /orders/{orderId}/lines/{lineId}/status                  → 200 Line | 409 | 503   body: { "fromStatus": "WAITING", "toStatus": "PREPARING" }
+PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 409 | 503（外部システム専用。Cognitoではなく別認証、下記参照）
 ```
 
 - Staff向け2エンドポイント（一覧・ステータス更新）はAPI Gateway側にCognito JWTオーソライザーを付け、リクエストがLambdaへ届いた時点で認証済みであることを保証する（ハンドラ側のコードで改めてJWTを検証する必要はない）。ログイン確認に失敗した場合の401はAPI Gatewayが直接返す（**§5.1の共通エラーエンベロープ`{error:{code,message,requestId}}`ではなく、API Gateway既定の`{"message":"Unauthorized"}`形式で返る**。§5.1のスロットリング429と同じく、Lambdaコードを経由しないレスポンスは契約の例外として扱う）
@@ -494,6 +495,7 @@ PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 40
 
 - 許可遷移は **`WAITING→PREPARING` と `PREPARING→READY` のみ**（`HANDED_OVER` は下記の受渡検知エンドポイントでのみ、`CANCELLED` はキャンセルAPIでのみ）。それ以外は 409。
 - `ConditionExpression: status = :fromStatus`。二重スワイプ・複数タブレット間の競合を 409 で弾く。
+- **キャンセルとの競合（Issue #70）**: 顧客キャンセル（`TransactWriteItems`、§7.3）の書き込み中に同じ明細へこの単発UpdateItemが届くと、DynamoDBは条件式を評価する前に`TransactionConflictException`で拒否する（何も書き込まれない）。この場合は50ms→100ms待って最大2回送り直す。送り直しで条件式が評価されれば、キャンセル成功なら409・キャンセル失敗なら200と正しく決まる。2回送り直しても拒否され続けた場合は、勝敗が未確定のため409ではなく**503（`SERVICE_UNAVAILABLE`）**を返す。店員UIは失敗時に元の一覧へ戻し、次回ポーリングで実際の状態を表示する。
 - `PREPARING` 遷移で `preparedAt` を記録（GSI2は維持）。`READY` 遷移で `readyAt` を記録し **GSI2キーをREMOVE**（製造キューから離脱）。
 - **v2.5訂正: `ZONESTAT`（`sumSeconds`/`sampleCount`）の加算は、LINE本体の更新と同じUpdateItemに含めず、成功後に別途発行する2回目のUpdateItemで`ADD`する**（`readyAt - preparedAt`を反映、requirements.md §8.2）。1回のTransactWriteItemsにまとめる案もあったが、過去スライスでTransactWriteItems関連のIAM/motoの落とし穴を踏んだ経験から、あえて逐次2回に分割した。2回目が万一失敗しても「統計サンプルが1件記録されないだけ」で実害が無いため許容する（欠番許容の原則、§6.3と同じ考え方）。
 
@@ -506,7 +508,7 @@ PATCH /orders/{orderId}/lines/{lineId}/handover                → 200 Line | 40
 **PATCH /orders/{orderId}/lines/{lineId}/handover**（新設。requirements.md §6.3・§7.4の自動受渡システムからの検知通知を受ける。リクエストボディ不要）:
 
 - 自動受渡システムが持ち去りを検知した際に、当該明細の`lineId`を指定して呼び出す
-- `ConditionExpression: status = READY`の条件付き更新で`status: READY→HANDED_OVER`（`handedOverAt`を記録）。`READY`以外なら409（二重通知・誤検知への防御）
+- `ConditionExpression: status = READY`の条件付き更新で`status: READY→HANDED_OVER`（`handedOverAt`を記録）。`READY`以外なら409（二重通知・誤検知への防御）。`TransactionConflictException`時の送り直しと503は、上記ステータス更新と同じ扱い
 - 注文全体の受渡完了は、`status-fn`のREAD時導出ルール（requirements.md §6.2: 全明細〔`CANCELLED`除く〕が`HANDED_OVER`）がそのまま適用されるため、META側への追加書き込みは発生しない
 
 ---

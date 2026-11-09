@@ -15,6 +15,7 @@ menu-fn/cart-fnのように機能ごとにリポジトリを分ける理由が�
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,12 @@ _IDEMPOTENCY_TTL = timedelta(hours=24)
 
 # GSI2("ゾーン別製造キュー")のインデックス名。docs/architecture.md §6.3。
 _GSI2_INDEX_NAME = "GSI2"
+
+# 明細の単発UpdateItemがTransactionConflictExceptionで拒否されたときに、送り直す前に待つ秒数。
+# 要素数がそのまま送り直しの最大回数になる(ここでは最初の1回 + 送り直し2回 = 最大3回)。
+# 相手のトランザクション(主にキャンセル)は通常数十msで終わるため、まず50ms、次に100ms待つ
+# (Issue #70)。
+_TRANSACTION_CONFLICT_RETRY_DELAYS_SECONDS: tuple[float, ...] = (0.05, 0.1)
 
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
@@ -95,6 +102,22 @@ class LineTransitionConflictError(Exception):
 
     def __init__(self, order_id: str, line_id: str) -> None:
         super().__init__(f"line {line_id!r} of order {order_id!r} is not in the expected status")
+        self.order_id = order_id
+        self.line_id = line_id
+
+
+class LineBusyError(Exception):
+    """明細が別のトランザクション(主にキャンセル)の書き込み中で、送り直しても更新できなかった。
+
+    DynamoDBは書き込み中の項目への単発UpdateItemを、条件式を評価する前に
+    TransactionConflictExceptionで拒否する。update_line_status()/handover_line()は少し待って
+    送り直すが、それでも拒否され続けた場合にこの例外を送出する。この時点では「明細がもう
+    期待した状態ではない」かどうか(=どちらが勝ったか)はまだ分からないため、
+    LineTransitionConflictError(409)とは区別し、呼び出し側で503に変換する(Issue #70)。
+    """
+
+    def __init__(self, order_id: str, line_id: str) -> None:
+        super().__init__(f"line {line_id!r} of order {order_id!r} is locked by another transaction")
         self.order_id = order_id
         self.line_id = line_id
 
@@ -664,23 +687,20 @@ class OrderRepository:
                 "SET #status = :to, updatedAt = :now, readyAt = :now REMOVE GSI2PK, GSI2SK"
             )
 
-        try:
-            response = self._table.update_item(
-                Key={"PK": pk, "SK": sk},
-                UpdateExpression=update_expression,
-                ConditionExpression="#status = :from",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={
-                    ":to": to_status,
-                    ":from": from_status,
-                    ":now": timestamp,
-                },
-                ReturnValues="ALL_OLD",
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise LineTransitionConflictError(order_id, line_id) from exc
-            raise
+        response = self._update_line_item(
+            order_id,
+            line_id,
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression=update_expression,
+            ConditionExpression="#status = :from",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":to": to_status,
+                ":from": from_status,
+                ":now": timestamp,
+            },
+            ReturnValues="ALL_OLD",
+        )
 
         old_item = cast(dict[str, Any], response["Attributes"])
         updates: dict[str, Any] = {"status": to_status, "updated_at": timestamp}
@@ -710,28 +730,53 @@ class OrderRepository:
         pk = _order_partition_key(order_id)
         sk = f"{ORDER_LINE_SORT_KEY_PREFIX}{line_id}"
 
-        try:
-            response = self._table.update_item(
-                Key={"PK": pk, "SK": sk},
-                UpdateExpression="SET #status = :to, updatedAt = :now, handedOverAt = :now",
-                ConditionExpression="#status = :from",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={
-                    ":to": "HANDED_OVER",
-                    ":from": "READY",
-                    ":now": timestamp,
-                },
-                ReturnValues="ALL_OLD",
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise LineTransitionConflictError(order_id, line_id) from exc
-            raise
+        response = self._update_line_item(
+            order_id,
+            line_id,
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="SET #status = :to, updatedAt = :now, handedOverAt = :now",
+            ConditionExpression="#status = :from",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":to": "HANDED_OVER",
+                ":from": "READY",
+                ":now": timestamp,
+            },
+            ReturnValues="ALL_OLD",
+        )
 
         old_item = cast(dict[str, Any], response["Attributes"])
         return OrderLine(**old_item).model_copy(
             update={"status": "HANDED_OVER", "updated_at": timestamp, "handed_over_at": timestamp}
         )
+
+    def _update_line_item(self, order_id: str, line_id: str, **update_kwargs: Any) -> Any:
+        """明細(LINE)への条件付きUpdateItemを実行し、DynamoDBのエラーを意味のある例外に変換する。
+
+        update_line_status()/handover_line()の共通部分。エラーごとの扱い:
+        - ConditionalCheckFailedException: 明細が期待した状態ではない → LineTransitionConflictError
+          (409)。送り直しても結果は変わらないので、すぐに送出する。
+        - TransactionConflictException: 別のトランザクション(主にキャンセル)が書き込み中で、
+          条件式を評価する前に拒否された。何も書き込まれていないので送り直しても安全。
+          _TRANSACTION_CONFLICT_RETRY_DELAYS_SECONDSの秒数だけ待って送り直し、それでも
+          拒否され続けたらLineBusyError(503)を送出する(Issue #70)。
+        - それ以外: そのまま送出する(ハンドラの共通処理で500になる)。
+        """
+        delays = _TRANSACTION_CONFLICT_RETRY_DELAYS_SECONDS
+        attempt = 0
+        while True:
+            try:
+                return self._table.update_item(**update_kwargs)
+            except ClientError as exc:
+                code = exc.response["Error"]["Code"]
+                if code == "ConditionalCheckFailedException":
+                    raise LineTransitionConflictError(order_id, line_id) from exc
+                if code != "TransactionConflictException":
+                    raise
+                if attempt >= len(delays):
+                    raise LineBusyError(order_id, line_id) from exc
+                time.sleep(delays[attempt])
+                attempt += 1
 
     def _add_zone_stat(self, store_id: str, zone: str, duration_seconds: int, now: str) -> None:
         """ZONESTATへ1件分の製造時間を原子的に加算する(sumSeconds/sampleCountをADD)。"""

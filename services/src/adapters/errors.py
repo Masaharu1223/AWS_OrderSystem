@@ -14,6 +14,7 @@ ErrorCode = Literal[
     "CONFLICT",
     "TOO_MANY_REQUESTS",
     "INTERNAL",
+    "SERVICE_UNAVAILABLE",
 ]
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
@@ -23,6 +24,7 @@ _STATUS_BY_CODE: dict[ErrorCode, int] = {
     "CONFLICT": 409,
     "TOO_MANY_REQUESTS": 429,
     "INTERNAL": 500,
+    "SERVICE_UNAVAILABLE": 503,
 }
 
 

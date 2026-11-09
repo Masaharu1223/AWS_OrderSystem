@@ -8,7 +8,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from adapters.order_repository import OrderRepository
+from adapters.order_repository import LineBusyError, OrderRepository
 from domain.order.models import Order, OrderLine
 
 _TABLE_NAME = "test-table"
@@ -251,6 +251,28 @@ def test_update_line_status_returns_409_when_from_status_does_not_match_actual(
     assert response["statusCode"] == 409
 
 
+@mock_aws
+def test_update_line_status_returns_503_when_line_stays_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_table()
+    _put_handover_parameter()
+    store_handler = _reload_handler(monkeypatch)
+
+    def always_busy(*args: Any, **kwargs: Any) -> Any:
+        raise LineBusyError("ord-busy", "001")
+
+    # 送り直しても相手のトランザクションが終わらなかった(勝敗が未確定)ケース(Issue #70)。
+    monkeypatch.setattr(store_handler._order_repository, "update_line_status", always_busy)
+
+    response = store_handler.handler(
+        _update_status_event("ord-busy", "001", "WAITING", "PREPARING"), _CONTEXT
+    )
+
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"])["error"]["code"] == "SERVICE_UNAVAILABLE"
+
+
 # --- PATCH /orders/{orderId}/lines/{lineId}/handover ---
 
 
@@ -314,6 +336,25 @@ def test_handover_line_when_not_ready_returns_409(monkeypatch: pytest.MonkeyPatc
     response = store_handler.handler(_handover_event("ord-h", "001", _HANDOVER_API_KEY), _CONTEXT)
 
     assert response["statusCode"] == 409
+
+
+@mock_aws
+def test_handover_line_returns_503_when_line_stays_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_table()
+    _put_handover_parameter()
+    store_handler = _reload_handler(monkeypatch)
+
+    def always_busy(*args: Any, **kwargs: Any) -> Any:
+        raise LineBusyError("ord-busy", "001")
+
+    monkeypatch.setattr(store_handler._order_repository, "handover_line", always_busy)
+
+    response = store_handler.handler(
+        _handover_event("ord-busy", "001", _HANDOVER_API_KEY), _CONTEXT
+    )
+
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"])["error"]["code"] == "SERVICE_UNAVAILABLE"
 
 
 # --- 未知ルート ---
