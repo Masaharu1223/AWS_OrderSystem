@@ -113,7 +113,9 @@ def _handle_update_line_status(event: dict[str, Any], request_id: str) -> dict[s
         return json_response(status, body)
     except LineBusyError:
         # 送り直してもキャンセル等の書き込み中が続いた(勝敗が未確定)。409とは言えないので503。
-        logger.warning("store-fn: line busy after retries", extra={"orderId": order_id})
+        logger.warning(
+            "store-fn: line busy after retries", extra={"orderId": order_id, "lineId": line_id}
+        )
         status, body = build_error(
             "SERVICE_UNAVAILABLE", "line is being updated by another request", request_id
         )
@@ -146,7 +148,9 @@ def _handle_handover_line(event: dict[str, Any], request_id: str) -> dict[str, A
         status, body = build_error("CONFLICT", "line is not READY", request_id)
         return json_response(status, body)
     except LineBusyError:
-        logger.warning("store-fn: line busy after retries", extra={"orderId": order_id})
+        logger.warning(
+            "store-fn: line busy after retries", extra={"orderId": order_id, "lineId": line_id}
+        )
         status, body = build_error(
             "SERVICE_UNAVAILABLE", "line is being updated by another request", request_id
         )

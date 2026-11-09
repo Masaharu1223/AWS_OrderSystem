@@ -538,9 +538,12 @@ def test_handover_line_raises_conflict_when_not_ready() -> None:
 # 実際のDynamoDBでは、キャンセル(TransactWriteItems)の書き込み中に同じ明細へ単発の
 # UpdateItemが届くと、条件式を評価する前にTransactionConflictExceptionで拒否される。
 # motoはこれを再現しないため、update_itemを差し替えて「最初のN回だけ競合エラー」を起こす。
+# 送り直しの回数(最大3回)と待ち時間(50ms→100ms)はユーザーと合意した仕様のため、
+# テストでは定数を参照せずあえて数値で固定している(定数を変えたらテストも見直す)。
 
 
 def _transaction_conflict_error() -> ClientError:
+    """DynamoDBが「別のトランザクションが書き込み中」で拒否したときと同じ形のエラーを作る。"""
     return ClientError(
         {
             "Error": {
