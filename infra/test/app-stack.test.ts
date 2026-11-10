@@ -211,11 +211,77 @@ describe('AppStack', () => {
     + 'AuthorizationはCognito JWTを送るために必要)', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: {
-        AllowOrigins: ['http://localhost:3000'],
         AllowMethods: Match.arrayWith(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
         AllowHeaders: Match.arrayWith(['Content-Type', 'Idempotency-Key', 'Authorization']),
       },
     });
+  });
+
+  test('CORSの許可元はlocalhost:3000とAmplifyのmainブランチURL(https://main.<既定ドメイン>)の2つだけ', () => {
+    const appLogicalId = Object.keys(template.findResources('AWS::Amplify::App'))[0];
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: {
+        AllowOrigins: [
+          'http://localhost:3000',
+          { 'Fn::Join': ['', ['https://main.', { 'Fn::GetAtt': [appLogicalId, 'DefaultDomain'] }]] },
+        ],
+      },
+    });
+  });
+
+  test('Amplifyアプリは静的配信(WEB)・モノレポのweb/・このリポジトリに接続する', () => {
+    template.resourceCountIs('AWS::Amplify::App', 1);
+    template.hasResourceProperties('AWS::Amplify::App', {
+      Name: 'MobileOrder-dev-web',
+      Platform: 'WEB',
+      Repository: 'https://github.com/Masaharu1223/AWS_OrderSystem',
+      EnvironmentVariables: [{ Name: 'AMPLIFY_MONOREPO_APP_ROOT', Value: 'web' }],
+    });
+  });
+
+  test('AmplifyのGitHubトークンはSecrets Managerの動的参照で、テンプレートに平文が入らない', () => {
+    const amplifyApp = Object.values(template.findResources('AWS::Amplify::App'))[0] as {
+      Properties: { AccessToken: unknown };
+    };
+    expect(amplifyApp.Properties.AccessToken).toBe(
+      '{{resolve:secretsmanager:mobile-order/github-amplify-token:SecretString:::}}',
+    );
+  });
+
+  test('Amplifyのmainブランチは自動ビルドON・PRプレビューOFF・SSGで、APIのURLと店員ログインIDを参照で受け取る', () => {
+    const appLogicalId = Object.keys(template.findResources('AWS::Amplify::App'))[0];
+    const apiLogicalId = Object.keys(template.findResources('AWS::ApiGatewayV2::Api'))[0];
+    template.resourceCountIs('AWS::Amplify::Branch', 1);
+    template.hasResourceProperties('AWS::Amplify::Branch', {
+      AppId: { 'Fn::GetAtt': [appLogicalId, 'AppId'] },
+      BranchName: 'main',
+      Framework: 'Next.js - SSG',
+      Stage: 'DEVELOPMENT',
+      EnableAutoBuild: true,
+      EnablePullRequestPreview: false,
+      EnvironmentVariables: [
+        // httpApi.url(createDefaultStage: falseのためundefined)ではなくapiEndpointを使っていること
+        { Name: 'NEXT_PUBLIC_API_BASE_URL', Value: { 'Fn::GetAtt': [apiLogicalId, 'ApiEndpoint'] } },
+        { Name: 'NEXT_PUBLIC_STAFF_CLIENT_ID', Value: Match.anyValue() },
+      ],
+    });
+
+    // 手書きの文字列ではなく、StatefulStackの店員用アプリクライアントIDへの参照であること。
+    // スタック間参照の書き方はcdk.jsonの設定で変わる(本番synthはFn::GetStackOutput、cdk.jsonを
+    // 読まないこのテストではFn::ImportValue)ため、参照先の名前で確認する。
+    const branch = Object.values(template.findResources('AWS::Amplify::Branch'))[0] as {
+      Properties: { EnvironmentVariables: { Name: string; Value: unknown }[] };
+    };
+    const staffClientId = branch.Properties.EnvironmentVariables.find(
+      (v) => v.Name === 'NEXT_PUBLIC_STAFF_CLIENT_ID',
+    );
+    expect(typeof staffClientId?.Value).toBe('object');
+    expect(JSON.stringify(staffClientId?.Value)).toContain('StaffUserPoolClient');
+  });
+
+  test('フロントのURLとAmplifyアプリIDを出力する(初回ビルドの開始やブラウザ確認に使う)', () => {
+    template.hasOutput('WebUrl', {});
+    template.hasOutput('AmplifyAppId', {});
   });
 
   test('DefaultStageのRouteSettingsでポーリング系(status-fn)と書き込み系(order-fn)が別バケットに分離されている', () => {
@@ -476,5 +542,18 @@ describe('AppStack paymentProviderコンテキスト', () => {
 
   test('stage=prodでもpaymentProviderをpaypayに明示すればエラーにならない', () => {
     expect(() => buildAppStack('prod-override', 'prod', { paymentProvider: 'paypay' })).not.toThrow();
+  });
+
+  test('stage=prodではAmplify Hostingを作らず、CORSの許可元はlocalhost:3000のまま(prodの配信方法は未決定)', () => {
+    const prodTemplate = Template.fromStack(
+      buildAppStack('prod-hosting', 'prod', { paymentProvider: 'paypay' }),
+    );
+    prodTemplate.resourceCountIs('AWS::Amplify::App', 0);
+    prodTemplate.resourceCountIs('AWS::Amplify::Branch', 0);
+    prodTemplate.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: { AllowOrigins: ['http://localhost:3000'] },
+    });
+    expect(Object.keys(prodTemplate.findOutputs('WebUrl'))).toHaveLength(0);
+    expect(Object.keys(prodTemplate.findOutputs('AmplifyAppId'))).toHaveLength(0);
   });
 });
