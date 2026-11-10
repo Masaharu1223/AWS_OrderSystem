@@ -28,6 +28,7 @@
 | `ws` | WebSocket（connect/disconnect/push-fn） |
 | `router` | machine-router-fn / SQS振り分け |
 | `cdk` | インフラ（CDK） |
+| `hosting` | フロントエンド配信（Amplify Hosting / `amplify.yml` / CDKの`WebHosting`） |
 | `ci` | GitHub Actions |
 | `deps` | 依存関係更新 |
 
