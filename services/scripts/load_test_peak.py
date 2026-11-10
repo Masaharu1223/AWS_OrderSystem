@@ -6,6 +6,7 @@ docs/requirements.md が明記する想定負荷(最大同時接続100人、ピ�
 
 スタッフ側API(店員の進捗操作)は呼ばない。投入した注文は全てWAITINGのまま残る
 (お客さんがアプリで待ち続ける状況の再現が目的で、製造フロー全体の再現ではない)。
+注文は既定で負荷テスト専用の店舗ID`load-test`に作るので、店員画面(store-01)には出ない。
 
 pytest・scripts/verify.sh には含めない(実AWSへ書き込む手動検証ツールのため)。
 
@@ -402,7 +403,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--stage", choices=["dev"], required=True)
     parser.add_argument("--api-url", default=None, help="省略時はCFN Outputsから自動解決する")
-    parser.add_argument("--store-id", default="store-01")
+    # 既定は負荷テスト専用の店舗ID。store-01(店員画面が表示する店舗)にすると、投入した注文が
+    # WAITINGのまま店員画面のキューに残り続けるため(2026-10-02の実行で211件残留した)。
+    parser.add_argument("--store-id", default="load-test")
     parser.add_argument("--orders", type=int, default=100)
     parser.add_argument("--order-interval", type=float, default=1.2)
     parser.add_argument("--poll-duration-seconds", type=float, default=None)
