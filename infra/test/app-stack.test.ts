@@ -262,10 +262,21 @@ describe('AppStack', () => {
       EnvironmentVariables: [
         // httpApi.url(createDefaultStage: falseのためundefined)ではなくapiEndpointを使っていること
         { Name: 'NEXT_PUBLIC_API_BASE_URL', Value: { 'Fn::GetAtt': [apiLogicalId, 'ApiEndpoint'] } },
-        // 手書きの文字列ではなく、StatefulStackのアプリクライアントIDへの参照であること
-        { Name: 'NEXT_PUBLIC_STAFF_CLIENT_ID', Value: Match.objectLike({}) },
+        { Name: 'NEXT_PUBLIC_STAFF_CLIENT_ID', Value: Match.anyValue() },
       ],
     });
+
+    // 手書きの文字列ではなく、StatefulStackの店員用アプリクライアントIDへの参照であること。
+    // スタック間参照の書き方はcdk.jsonの設定で変わる(本番synthはFn::GetStackOutput、cdk.jsonを
+    // 読まないこのテストではFn::ImportValue)ため、参照先の名前で確認する。
+    const branch = Object.values(template.findResources('AWS::Amplify::Branch'))[0] as {
+      Properties: { EnvironmentVariables: { Name: string; Value: unknown }[] };
+    };
+    const staffClientId = branch.Properties.EnvironmentVariables.find(
+      (v) => v.Name === 'NEXT_PUBLIC_STAFF_CLIENT_ID',
+    );
+    expect(typeof staffClientId?.Value).toBe('object');
+    expect(JSON.stringify(staffClientId?.Value)).toContain('StaffUserPoolClient');
   });
 
   test('フロントのURLとAmplifyアプリIDを出力する(初回ビルドの開始やブラウザ確認に使う)', () => {
@@ -542,5 +553,7 @@ describe('AppStack paymentProviderコンテキスト', () => {
     prodTemplate.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: { AllowOrigins: ['http://localhost:3000'] },
     });
+    expect(Object.keys(prodTemplate.findOutputs('WebUrl'))).toHaveLength(0);
+    expect(Object.keys(prodTemplate.findOutputs('AmplifyAppId'))).toHaveLength(0);
   });
 });

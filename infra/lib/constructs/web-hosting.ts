@@ -85,6 +85,7 @@ export class WebHosting extends Construct {
       appId: this.app.attrAppId,
       branchName: this.props.branchName,
       framework: 'Next.js - SSG',
+      // 今はdevでしか作らないが、prodを追加したときに正しい値になるようstageから決める。
       stage: this.props.stage === 'prod' ? 'PRODUCTION' : 'DEVELOPMENT',
       // pushで自動ビルド。PRごとのプレビュー環境はURLが毎回変わりCORSに載せられないため無効。
       enableAutoBuild: true,
