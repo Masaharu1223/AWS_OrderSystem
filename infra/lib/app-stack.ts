@@ -10,10 +10,18 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { PythonLambdaFunction } from './constructs/python-lambda-function';
-import { StageStackProps } from './stateful-stack';
+import { WebHosting } from './constructs/web-hosting';
+import { Stage, StageStackProps } from './stateful-stack';
 
 // services/layers/paypay-sdk を指す。infra/lib/ からの相対パス。
 const PAYPAY_SDK_LAYER_PATH = path.join(__dirname, '..', '..', 'services', 'layers', 'paypay-sdk');
+
+// フロントエンド(web/)をAmplify Hostingで配信するときの接続先(docs/architecture.md §1.3)。
+// prodの配信方法(ブランチの分け方・独自ドメイン等)は未決定のため、今はdevだけ作る(tasks/todo.md §36)。
+const WEB_HOSTING_BRANCH_BY_STAGE: Partial<Record<Stage, string>> = { dev: 'main' };
+const WEB_REPOSITORY_URL = 'https://github.com/Masaharu1223/AWS_OrderSystem';
+// stageに依存しない共有のシークレット名(GitHubトークンはリポジトリにつき1本のため)。
+const GITHUB_TOKEN_SECRET_NAME = 'mobile-order/github-amplify-token';
 
 export interface AppStackProps extends StageStackProps {
   readonly table: dynamodb.Table;
@@ -65,8 +73,9 @@ export class AppStack extends cdk.Stack {
     // インポートし、IAM権限(grantRead)だけを付与する。
     const paypayApiKeyParameterName = `/mobile-order/${props.stage}/payment/paypay/api-key`;
     const paypayApiSecretParameterName = `/mobile-order/${props.stage}/payment/paypay/api-secret`;
-    // web側のリダイレクト着地ページは未実装(別タスク)のため、frontend-stack実装までの暫定値。
-    // 実際のドメインが決まったらCDKコンテキスト(--context paypayRedirectUrl=...)で上書きする。
+    // web側のリダイレクト着地ページは未実装(別タスク)のため暫定値。Amplify Hostingのドメインから
+    // 組み立てる対応は別PRで行う(tasks/todo.md §36 PR-C)。それまではCDKコンテキスト
+    // (--context paypayRedirectUrl=...)で上書きする。
     const paypayRedirectUrl = (this.node.tryGetContext('paypayRedirectUrl') as string | undefined)
       ?? 'http://localhost:3000/order';
 
@@ -171,16 +180,31 @@ export class AppStack extends cdk.Stack {
     );
     handoverApiKeyParameter.grantRead(storeFn);
 
+    // フロントエンドの配信(Amplify Hosting)。先にAmplifyアプリを作ってフロントのURL(origin)を
+    // 確定させ、それをCORSに入れてからHttpApiを作る(順番の理由はWebHostingのコメント参照)。
+    const webBranchName = WEB_HOSTING_BRANCH_BY_STAGE[props.stage];
+    const webHosting = webBranchName === undefined
+      ? undefined
+      : new WebHosting(this, 'WebHosting', {
+        stage: props.stage,
+        repositoryUrl: WEB_REPOSITORY_URL,
+        branchName: webBranchName,
+        githubTokenSecretName: GITHUB_TOKEN_SECRET_NAME,
+      });
+
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: `MobileOrder-${props.stage}-http-api`,
       // デフォルトステージをスロットル設定付きで自前定義するため、自動作成を無効化する。
       createDefaultStage: false,
-      // web/は静的エクスポート(frontend-stack=S3+CloudFrontにNode.jsランタイムが無いため)を採用するため、
-      // ブラウザのJavaScriptが直接このAPIを叩く。よってブラウザのSame-Origin PolicyによりCORS設定が
-      // 必須になる(docs/architecture.md §1.3)。frontend-stack(スライス⑦)が実装されCloudFrontドメインが
-      // 判明したら、allowOriginsにそのドメインを追加する。
+      // web/は静的エクスポートのため、ブラウザのJavaScriptが直接このAPIを叩く。よってブラウザの
+      // Same-Origin PolicyによりCORS設定が必須になる(docs/architecture.md §1.3)。許可元は
+      // ローカル開発用とAmplify Hostingのフロントのみ(完全一致。*.amplifyapp.comのような
+      // ワイルドカードは他人のAmplifyアプリまで許可してしまうため使わない)。
       corsPreflight: {
-        allowOrigins: ['http://localhost:3000'],
+        allowOrigins: [
+          'http://localhost:3000',
+          ...(webHosting === undefined ? [] : [webHosting.origin]),
+        ],
         allowMethods: [
           apigwv2.CorsHttpMethod.GET,
           apigwv2.CorsHttpMethod.POST,
@@ -327,5 +351,17 @@ export class AppStack extends cdk.Stack {
       value: httpApi.apiEndpoint,
       exportName: `MobileOrder-${props.stage}-HttpApiUrl`,
     });
+
+    if (webHosting !== undefined) {
+      // httpApi.urlはcreateDefaultStage: falseのためundefinedになる。HttpApiUrl出力と同じapiEndpoint
+      // (末尾スラッシュなし)を使う。web/src/lib/api.tsはこの値の後ろにパスを連結する。
+      webHosting.connectBackend({
+        apiEndpoint: httpApi.apiEndpoint,
+        staffUserPoolClientId: props.staffUserPoolClient.userPoolClientId,
+      });
+      new cdk.CfnOutput(this, 'WebUrl', { value: webHosting.origin });
+      // 初回ビルドの開始(aws amplify start-job --app-id <これ> ...)に使う。
+      new cdk.CfnOutput(this, 'AmplifyAppId', { value: webHosting.appId });
+    }
   }
 }
