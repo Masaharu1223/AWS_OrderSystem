@@ -68,16 +68,30 @@ export class AppStack extends cdk.Stack {
       description: 'paypayopa SDK(order-fn/status-fn専用、PAYMENT_PROVIDER=paypayのときのみ必要)',
     });
 
+    // フロントエンドの配信(Amplify Hosting)。先にAmplifyアプリを作ってフロントのURL(origin)を
+    // 確定させる。このURLはPayPayの戻り先(下記)とHttpApiのCORSで使う(順番の理由は
+    // WebHostingのコメント参照)。
+    const webBranchName = WEB_HOSTING_BRANCH_BY_STAGE[props.stage];
+    const webHosting = webBranchName === undefined
+      ? undefined
+      : new WebHosting(this, 'WebHosting', {
+        stage: props.stage,
+        repositoryUrl: WEB_REPOSITORY_URL,
+        branchName: webBranchName,
+        githubTokenSecretName: GITHUB_TOKEN_SECRET_NAME,
+      });
+
     // PayPayの秘密情報(SSM SecureString)はCDKでは作らず、デプロイ後に手動で保存する運用のため
     // (受渡検知の合言葉と同じ方針)、実体を作らないfromSecureStringParameterAttributes()で
     // インポートし、IAM権限(grantRead)だけを付与する。
     const paypayApiKeyParameterName = `/mobile-order/${props.stage}/payment/paypay/api-key`;
     const paypayApiSecretParameterName = `/mobile-order/${props.stage}/payment/paypay/api-secret`;
-    // web側のリダイレクト着地ページは未実装(別タスク)のため暫定値。Amplify Hostingのドメインから
-    // 組み立てる対応は別PRで行う(tasks/todo.md §36 PR-C)。それまではCDKコンテキスト
-    // (--context paypayRedirectUrl=...)で上書きする。
+    // PayPayで支払いを終えたお客様のブラウザが戻ってくる先。CDKコンテキスト
+    // (--context paypayRedirectUrl=...)があればそれを優先し、無ければAmplifyで配信している
+    // フロントの注文状況ページにする。配信先を持たないstage(現状prod)はlocalhostのまま
+    // (prodの配信方法を決めるときに見直す)。戻ってきた注文を特定する仕組み(?id=...)は未実装(別タスク)。
     const paypayRedirectUrl = (this.node.tryGetContext('paypayRedirectUrl') as string | undefined)
-      ?? 'http://localhost:3000/order';
+      ?? (webHosting === undefined ? 'http://localhost:3000/order' : `${webHosting.origin}/order/`);
 
     // PayPayの加盟店申込み完了を待たずに決済確認フロー全体を動かせるよう、既定値は
     // auto-approve(外部通信なし・常に即時成功)にしている(docs/requirements.md §12.1.1)。
@@ -179,18 +193,6 @@ export class AppStack extends cdk.Stack {
       { parameterName: handoverApiKeyParameterName },
     );
     handoverApiKeyParameter.grantRead(storeFn);
-
-    // フロントエンドの配信(Amplify Hosting)。先にAmplifyアプリを作ってフロントのURL(origin)を
-    // 確定させ、それをCORSに入れてからHttpApiを作る(順番の理由はWebHostingのコメント参照)。
-    const webBranchName = WEB_HOSTING_BRANCH_BY_STAGE[props.stage];
-    const webHosting = webBranchName === undefined
-      ? undefined
-      : new WebHosting(this, 'WebHosting', {
-        stage: props.stage,
-        repositoryUrl: WEB_REPOSITORY_URL,
-        branchName: webBranchName,
-        githubTokenSecretName: GITHUB_TOKEN_SECRET_NAME,
-      });
 
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: `MobileOrder-${props.stage}-http-api`,
