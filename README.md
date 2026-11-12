@@ -27,7 +27,8 @@
 
 | 変数名 | 対象 | 説明 |
 |---|---|---|
-| `NEXT_PUBLIC_API_BASE_URL` | `web/` | API Gateway のベースURL。未設定時はdev環境のURLにフォールバックする（[`web/src/lib/api.ts`](web/src/lib/api.ts)） |
+| `NEXT_PUBLIC_API_BASE_URL` | `web/` | API Gateway のベースURL（必須。未設定だとビルド・開発サーバーがエラーで止まる）。ローカルは [`web/.env.example`](web/.env.example) を `web/.env.local` にコピーして設定する。Amplify Hosting ではCDKが自動で設定する |
+| `NEXT_PUBLIC_STAFF_CLIENT_ID` | `web/` | 店員ログイン（Cognito）のアプリクライアントID（必須）。設定方法は `NEXT_PUBLIC_API_BASE_URL` と同じ |
 | `TABLE_NAME` | `services/`（Lambda実行時） | DynamoDBテーブル名。CDKがLambdaに自動設定するため、ローカルでの手動設定は不要（[`services/src/config.py`](services/src/config.py)） |
 | `STAGE` / `--context stage=` | `infra/` | デプロイ先ステージ（`dev` \| `prod`）。CDKコマンド実行時に指定する（[`infra/bin/app.ts`](infra/bin/app.ts)） |
 
@@ -92,6 +93,7 @@
    ```bash
    cd web
    npm install
+   cp .env.example .env.local   # 値を埋める（取得元はファイル内のコメント参照）
    npm run dev
    ```
    `http://localhost:3000` を開く。

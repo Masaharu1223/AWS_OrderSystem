@@ -16,9 +16,9 @@ applications:
             # Node に任せると、Next.js が要求するバージョンを満たさない可能性がある。
             - nvm install 22
             - node --version
-            # NEXT_PUBLIC_* はビルド時に JS へ埋め込まれる。web/src/lib/api.ts・auth.ts には
-            # dev の値がフォールバックとして書かれているため、注入に失敗しても dev 向けに
-            # ビルドが成功してしまう。気づけるよう、未設定ならここで止める。
+            # NEXT_PUBLIC_* はビルド時に JS へ埋め込まれる(値は CDK がブランチの環境変数に入れる)。
+            # 未設定なら npm run build も止まる(web/src/lib/env.ts)が、依存のインストール前に
+            # 原因が一目で分かるよう、ここでも先に確認する。
             - 'test -n "$NEXT_PUBLIC_API_BASE_URL" || (echo "ERROR: NEXT_PUBLIC_API_BASE_URL is not set" && exit 1)'
             - 'test -n "$NEXT_PUBLIC_STAFF_CLIENT_ID" || (echo "ERROR: NEXT_PUBLIC_STAFF_CLIENT_ID is not set" && exit 1)'
             - npm ci --cache .npm --prefer-offline
