@@ -1,8 +1,9 @@
 # アーキテクチャ設計書 — カフェ向けモバイルオーダーアプリ
 
-**バージョン**: 2.5
+**バージョン**: 2.6
 **作成日**: 2026-07-02
-**最終更新**: 2026-08-16（スライス④store-fn実装に伴い§7.5を実装内容に合わせて訂正。「APIキー」記述をSSM合言葉＋`x-api-key`ヘッダの自前認証に修正（HTTP APIにAPIキー機能自体が存在しないため）、Go言語風の擬似コードをPython/生JSONアクセスに修正、ZONESTAT加算がLINE更新とは別の逐次UpdateItemで行われることを明記、CognitoログインエラーはAPI Gateway側で共通エラーエンベロープと異なる形式のまま返ることを追記、ログイン方式の決定（SRP＋ADMIN_USER_PASSWORD_AUTH）を記録。§6.1のLINE項目一覧にorderId/orderNumber/storeId/handedOverAtを追加〔§6.1, §7.5〕）
+**最終更新**: 2026-11-15（フロントエンドの配信先を`frontend-stack`（S3+CloudFront）からAmplify Hosting（CDKの`WebHosting` Constructで`AppStack`内に作成）へ変更した。§1.1・§1.2の図、§1.3（変更理由・構成・CORSの許可元・トレードオフ）を更新。CDKの外で管理している設定と運用手順は新設の`docs/operations.md`にまとめた〔§1.1, §1.2, §1.3〕）
+**2026-08-16更新**: スライス④store-fn実装に伴い§7.5を実装内容に合わせて訂正。「APIキー」記述をSSM合言葉＋`x-api-key`ヘッダの自前認証に修正（HTTP APIにAPIキー機能自体が存在しないため）、Go言語風の擬似コードをPython/生JSONアクセスに修正、ZONESTAT加算がLINE更新とは別の逐次UpdateItemで行われることを明記、CognitoログインエラーはAPI Gateway側で共通エラーエンベロープと異なる形式のまま返ることを追記、ログイン方式の決定（SRP＋ADMIN_USER_PASSWORD_AUTH）を記録。§6.1のLINE項目一覧にorderId/orderNumber/storeId/handedOverAtを追加〔§6.1, §7.5〕
 **2026-08-08更新**: 顧客向けフロントを`frontend-stack`（S3+CloudFront）でホスティングする前提から、Next.jsの静的エクスポート採用を確定。§1.3を新設し、CORS必須化・`/order?id=`クエリパラメータ方式・`sessionId`のlocalStorage管理という3つの設計上の影響を明記した〔§1.3〕
 **2026-08-07更新**: 顧客向けフロント実装の前提整備として、`DELETE /cart/{sessionId}/items/{itemId}`の応答契約を`204`から`200 Cart`に変更。`POST`/`PUT`と同様に更新後のカート全体を返すことで、クライアント側が削除後に再GETする必要をなくし、3種のミューテーションAPI全てで契約を統一した〔§7.2〕
 **2026-08-01更新**: スライス②cart-fnの詳細設計を反映。§6.1にカート明細アイテムの行を追加し、DynamoDBのTTL属性名を`expiresAt`に確定。§7.2に数量上限・空カート応答・品切れ商品拒否等の運用ルールを明記〔§6.1, §7.2〕
@@ -38,7 +39,7 @@ flowchart TB
     end
 
     subgraph edge["配信 / API"]
-        CF["CloudFront + S3"]
+        CF["Amplify Hosting<br/>(静的配信)"]
         HTTP["API Gateway<br/>(HTTP API)"]
     end
 
@@ -72,7 +73,7 @@ flowchart TB
     end
 
     subgraph edge["配信 / API"]
-        CF["CloudFront + S3"]
+        CF["Amplify Hosting<br/>(静的配信)"]
         HTTP["API Gateway<br/>(HTTP API)"]
         WS["API Gateway<br/>(WebSocket)"]
     end
@@ -128,9 +129,9 @@ flowchart TB
 
 > 将来版は§8・§9で詳細を維持している。**注意**: 将来版のSQS/zone-consumer-fnによる`queueSeq`採番は旧設計であり、v2.1で`order-fn`同期採番に置き換わった（§0原則3）。再導入する場合は「確定済みの`queueSeq`をStreams経由でSQSへ流す」形に設計し直す必要がある（requirements.md §14.12）。
 
-### 1.3 フロントエンド配信方式（v2.4で追加）
+### 1.3 フロントエンド配信方式（v2.4で追加、v2.6で配信先をAmplify Hostingへ変更）
 
-`web/`（顧客向けNext.js PWA）は`frontend-stack`（S3非公開+CloudFront/OAC、tasks/todo.md §1⑦）でホスティングする。S3はNode.jsランタイムを持たない静的ファイル配信のみのため、Next.jsは`output: 'export'`（静的エクスポート）でビルドすることをここで確定する。静的エクスポートは以下の機能を使用不可にする（`next build`ではなく`next dev`の時点でエラーになる。UIを書き進める前に前提を固定するほど手戻りが少ない）:
+`web/`（顧客向けNext.js PWA・スタッフ画面）は**AWS Amplify Hosting**の静的配信（`platform: WEB`）でホスティングする。静的配信はNode.jsランタイムを持たないため、Next.jsは`output: 'export'`（静的エクスポート）でビルドする。静的エクスポートは以下の機能を使用不可にする（`next build`ではなく`next dev`の時点でエラーになる。UIを書き進める前に前提を固定するほど手戻りが少ない）:
 
 - `cookies()` / `headers()`などのRequest-time API
 - Server Actions
@@ -138,13 +139,35 @@ flowchart TB
 - Rewrites / Redirects / Headers / Proxy
 - ISR（Incremental Static Regeneration）
 
-**影響1: CORSが必須**。ブラウザから直接API Gateway（`HttpApi`）を叩くため、`infra/lib/app-stack.ts`の`HttpApi`に`corsPreflight`を設定する（`allowOrigins`はCloudFrontドメイン+ローカル開発用オリジン、`allowHeaders`に`Idempotency-Key`を含める。§7系の各Lambda契約自体は変更なし）。
+**v2.6の変更: S3+CloudFrontからAmplify Hostingへ（2026-11-10決定）**。当初は`frontend-stack`（S3非公開+CloudFront/OAC）で配信する設計だった。実装前に比較し、次の理由でAmplify Hostingに変更した。静的エクスポートの採用と、下記の影響1〜3はそのまま有効。
+
+- **手間が少ない**: GitHubへのpushでビルド・デプロイ・HTTPS証明書・CDNまで一括で行われる。S3+CloudFrontでは、バケット・OAC・ディストリビューション・ビルドとアップロードのCIジョブ・キャッシュ無効化を自前で作る必要がある
+- **費用は現規模ではほぼ同じ**: どちらも静的ファイル配信のみで、月数十円程度の見込み（requirements.md §10.5）。アクセスが大きく増えると、配信単価はAmplify（$0.15/GB）の方がCloudFront（月1TBまで無料枠あり）より高くなる
+
+**構成**（`infra/lib/constructs/web-hosting.ts`、`amplify.yml`）:
+
+- Amplifyアプリは**別スタックにせず`AppStack`の中に作る**。APIのCORSには「フロントのURL」が要り、フロントのビルドには「APIのURL」が要る。別スタックにするとスタック間の循環参照になるが、同じスタックなら参照は一方向で済む。順番は「Amplifyアプリを作ってURLを確定 → そのURLをCORSに入れてHttpApiを作る → ブランチを作りAPIのURLを渡す（`connectBackend()`）」
+- ビルド時の環境変数`NEXT_PUBLIC_API_BASE_URL`（`httpApi.apiEndpoint`）・`NEXT_PUBLIC_STAFF_CLIENT_ID`は、CDKがブランチの環境変数に**参照で**入れる（手でコピーしない）。`web/`のコードに既定値は持たせず、未設定ならビルドを失敗させる（`web/src/lib/env.ts`）
+- ビルド定義はリポジトリ直下の`amplify.yml`（モノレポの`appRoot: web`、配信するのは`web/out/`、Node 22）。CDKの`buildSpec`には書かない（二重管理を避ける）
+- devは`main`ブランチを配信し、`main`へのマージで自動ビルドする（PRプレビューはOFF）。URLは`https://main.<Amplifyの既定ドメイン>`（CDKの出力`WebUrl`）
+- `trailingSlash: true`で各ページを`<path>/index.html`として出力する。Amplifyは`/cart/`を`cart/index.html`に解決し、`/cart`は`/cart/`へ301転送する（クエリ文字列は維持）
+- PayPayの支払い後の戻り先（`PAYPAY_REDIRECT_URL`）も、同じURLから`<WebUrl>/order/`として組み立てる
+- prodはまだ作らない（ブランチの分け方・独自ドメインが未決定）
+
+**トレードオフ・注意点**:
+
+- **URLは固定ではない**: ConstructのIDやブランチ名を変えたり、スタックを作り直したりすると`amplifyapp.com`のURLが変わる。お客様向けにQRコード等で使う前に独自ドメインを用意する
+- **`NEXT_PUBLIC_*`はビルド時に埋め込まれる**: 値が変わったら（HttpApiの作り直し等）Amplifyで再ビルドが必要
+- **devサイトは認証なしで公開**されている（実店舗のデータが無いので許容）
+- GitHub連携用のトークン（Secrets Manager）など、CDKの外で管理しているものがある。一覧と更新手順は`docs/operations.md`
+
+**影響1: CORSが必須**。ブラウザから直接API Gateway（`HttpApi`）を叩くため、`infra/lib/app-stack.ts`の`HttpApi`に`corsPreflight`を設定する。`allowOrigins`はAmplifyのブランチURL（`https://main.<既定ドメイン>`）とローカル開発用の`http://localhost:3000`の2つで、**完全一致**で指定する（`*.amplifyapp.com`のようなワイルドカードは他人のAmplifyアプリまで許可してしまうため使わない）。`allowHeaders`に`Idempotency-Key`・`Authorization`を含める。§7系の各Lambda契約自体は変更なし。
 
 **影響2: 動的ルートが使えない**。注文状況確認画面が扱う`orderId`はビルド時に列挙できない（注文確定後にサーバーが発行するため）。`/orders/{orderId}`のような動的ルートではなく、`/order?id=<orderId>`のクエリパラメータ方式を採用する。
 
 **影響3: セッション管理はクライアント側で完結させる**。`cart-fn`の`sessionId`はクライアント生成UUIDで、サーバー側に「存在するセッション」という概念がない（§7.2）ため、Cookieではなく`localStorage`に保存する。`cookies()`が使えないこととも整合する。
 
-この決定の詳細な検討経緯（architectサブエージェント相談内容含む）・実装のPR分割は`tasks/todo.md` §17を参照。
+静的エクスポート採用の検討経緯は`tasks/todo.md` §17、Amplify Hostingへの変更の検討経緯・実装のPR分割（PR #73・#74・#76）は§36を参照。
 
 ---
 
