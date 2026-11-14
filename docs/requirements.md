@@ -795,7 +795,7 @@ Phase C・Aは §14.12・§14.13 の決定（`queueSeq`同期採番・ポーリ�
 | スタック              | 内容                                                         |
 | ----------------- | ---------------------------------------------------------- |
 | `stateful-stack`  | DynamoDBテーブル（GSI1+GSI2、PITR有効）、`removalPolicy=RETAIN`、終了保護 |
-| `stateless-stack` | Lambda、API Gateway、IAM(grants)、CloudWatch                  |
+| `stateless-stack` | Lambda、API Gateway、IAM(grants)、CloudWatch ※実装では `AppStack`（`MobileOrder-{stage}-App`）。Cognito は `stateful-stack` 側 |
 | `frontend-stack`  | S3（非公開）+ CloudFront（OAC）※v1.14で廃止。Amplify Hosting を `AppStack` 内に作る構成へ変更（architecture.md §1.3） |
 
 

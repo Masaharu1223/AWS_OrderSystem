@@ -16,7 +16,7 @@
 | AWS Amplify の GitHub App | GitHub の「AWS Amplify (ap-northeast-1)」アプリ。**このリポジトリだけ**に許可 | 手作業（初回のみ） | Amplify が GitHub からソースを取得し、`main` への push を検知する |
 | 受渡検知の合言葉 | SSM SecureString `/mobile-order/{stage}/handover-api-key` | 手作業 | store-fn の `PATCH .../handover`（architecture.md §7.5） |
 | PayPay の API キー・シークレット | SSM SecureString `/mobile-order/{stage}/payment/paypay/api-key`・`.../api-secret` | 手作業（実決済を始めるとき） | order-fn・status-fn（`PAYMENT_PROVIDER=paypay` のときだけ） |
-| 店員のログインアカウント | Cognito ユーザープール（`MobileOrder-{stage}-Stateful`） | 手作業（セルフサインアップは無効） | スタッフ画面のログイン |
+| 店員のログインアカウント | Cognito ユーザープール `MobileOrder-{stage}-staff-user-pool`（スタック `MobileOrder-{stage}-Stateful`） | 手作業（セルフサインアップは無効） | スタッフ画面のログイン |
 | CDK コンテキスト | `cdk deploy` の `--context` | デプロイのたびに指定 | `paymentProvider`（既定 `auto-approve`）、`paypayRedirectUrl`（既定は Amplify の `<WebUrl>/order/`） |
 
 CDK は SSM パラメータ・シークレットを**作りません**。名前で参照して、読む権限を付けるだけです。
@@ -53,7 +53,8 @@ CDK は SSM パラメータ・シークレットを**作りません**。名前�
 
 ## 3. Amplify（フロントエンド配信）の操作
 
-dev のフロントは `https://main.d2fp0vxtbkuvla.amplifyapp.com`（CDK の出力 `WebUrl`）、Amplify のアプリ ID は `d2fp0vxtbkuvla`（出力 `AmplifyAppId`）です。
+dev のフロントは `https://main.d2fp0vxtbkuvla.amplifyapp.com`（CDK の出力 `WebUrl`）、Amplify のアプリ ID は `d2fp0vxtbkuvla`（出力 `AmplifyAppId`）です（2026-11 時点）。
+Amplify アプリを作り直すとどちらも変わるので、迷ったら CloudFormation スタック `MobileOrder-dev-App` の出力で確認してください。
 
 ### 自動ビルド
 

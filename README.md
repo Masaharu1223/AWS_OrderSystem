@@ -77,7 +77,7 @@
 
 ### 前提条件
 
-- Node.js（`web/`・`infra/`共にnpmで依存解決。バージョン指定は現状なし）
+- Node.js 22（CI・Amplify Hosting のビルドと同じバージョン。`web/`・`infra/`共にnpmで依存解決）
 - Python 3.12以上
 - AWS CLI設定済み・CDKブートストラップ済みのAWSアカウント（`infra/`のデプロイに必要）
 
