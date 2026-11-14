@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // frontend-stack(S3+CloudFront/OAC)はNode.jsランタイムを持たないため静的エクスポートを採用する
-  // (docs/architecture.md §1.3)。trailingSlashはCloudFront配信時のindex.html解決(スライス⑦)を見据えた前提合わせ。
+  // 配信はAmplify Hostingの静的配信(platform: WEB、infra/lib/constructs/web-hosting.ts)で、
+  // Node.jsランタイムを持たないため静的エクスポートを採用する。trailingSlashで各ページを
+  // `<path>/index.html`として出力し、Amplifyが`/cart/`→`cart/index.html`と解決できるようにする
+  // (`/cart`は`/cart/`へ301転送される)。
   output: "export",
   trailingSlash: true,
 };

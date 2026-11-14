@@ -2,7 +2,13 @@
 // 別プロトコル(AWS JSON-1.1)のため、認証をapi.tsのapiFetchには混ぜず、ここに分離する。
 // USER_PASSWORD_AUTH/REFRESH_TOKEN_AUTHはUserPoolClient(シークレット無しのpublicクライアント)に
 // 対して未署名で呼べるため、IAM認証情報やSRPライブラリは不要(tasks/todo.md §31)。
-const STAFF_CLIENT_ID = process.env.NEXT_PUBLIC_STAFF_CLIENT_ID ?? "71i90t8sqoamtmnp8qp3r58ura";
+import { requirePublicEnv } from "@/lib/env";
+
+// 店員用UserPoolClientのID。Amplifyでは CDK がブランチの環境変数に入れる。
+const STAFF_CLIENT_ID = requirePublicEnv(
+  "NEXT_PUBLIC_STAFF_CLIENT_ID",
+  process.env.NEXT_PUBLIC_STAFF_CLIENT_ID,
+);
 const COGNITO_IDP_URL = "https://cognito-idp.ap-northeast-1.amazonaws.com/";
 
 const STORAGE_KEY = "mobileOrder.staffAuth";

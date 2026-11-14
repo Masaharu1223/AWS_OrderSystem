@@ -1,5 +1,10 @@
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://pbmejzmuo4.execute-api.ap-northeast-1.amazonaws.com";
+import { requirePublicEnv } from "@/lib/env";
+
+// API GatewayのベースURL(末尾スラッシュなし)。Amplifyでは CDK がブランチの環境変数に入れる。
+const API_BASE_URL = requirePublicEnv(
+  "NEXT_PUBLIC_API_BASE_URL",
+  process.env.NEXT_PUBLIC_API_BASE_URL,
+);
 
 export class ApiError extends Error {
   constructor(

@@ -229,6 +229,19 @@ describe('AppStack', () => {
     });
   });
 
+  test('PayPayの戻り先(PAYPAY_REDIRECT_URL)はAmplifyのフロントの/order/(order-fn・status-fnとも)', () => {
+    const appLogicalId = Object.keys(template.findResources('AWS::Amplify::App'))[0];
+    const expected = {
+      'Fn::Join': ['', ['https://main.', { 'Fn::GetAtt': [appLogicalId, 'DefaultDomain'] }, '/order/']],
+    };
+    for (const functionName of ['MobileOrder-dev-order-fn', 'MobileOrder-dev-status-fn']) {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        FunctionName: functionName,
+        Environment: { Variables: Match.objectLike({ PAYPAY_REDIRECT_URL: expected }) },
+      });
+    }
+  });
+
   test('Amplifyアプリは静的配信(WEB)・モノレポのweb/・このリポジトリに接続する', () => {
     template.resourceCountIs('AWS::Amplify::App', 1);
     template.hasResourceProperties('AWS::Amplify::App', {
@@ -555,5 +568,29 @@ describe('AppStack paymentProviderコンテキスト', () => {
     });
     expect(Object.keys(prodTemplate.findOutputs('WebUrl'))).toHaveLength(0);
     expect(Object.keys(prodTemplate.findOutputs('AmplifyAppId'))).toHaveLength(0);
+  });
+
+  test('paypayRedirectUrlコンテキストを指定すると、Amplifyのドメインより優先される', () => {
+    const overriddenTemplate = Template.fromStack(
+      buildAppStack('redirect-override', 'dev', { paypayRedirectUrl: 'https://example.com/landing' }),
+    );
+    overriddenTemplate.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-dev-order-fn',
+      Environment: {
+        Variables: Match.objectLike({ PAYPAY_REDIRECT_URL: 'https://example.com/landing' }),
+      },
+    });
+  });
+
+  test('配信先(Amplify)を持たないprodでは、PayPayの戻り先はlocalhostのまま(prodの配信方法は未決定)', () => {
+    const prodTemplate = Template.fromStack(
+      buildAppStack('prod-redirect', 'prod', { paymentProvider: 'paypay' }),
+    );
+    prodTemplate.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'MobileOrder-prod-order-fn',
+      Environment: {
+        Variables: Match.objectLike({ PAYPAY_REDIRECT_URL: 'http://localhost:3000/order' }),
+      },
+    });
   });
 });

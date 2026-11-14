@@ -44,7 +44,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run lint
+      # NEXT_PUBLIC_*は必須(未設定だとビルドが止まる、web/src/lib/env.ts)。CIはビルドが
+      # 通るかだけを見るので、実在しないダミー値を渡す。配信用のビルドはAmplifyが行う。
       - run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://api.example.invalid
+          NEXT_PUBLIC_STAFF_CLIENT_ID: dummy-client-id
       # testファイルが1つも無いため実行ステップ自体を設けない(将来追加され次第 npm test を足す)。
       # --omit=dev: devDependencies(eslint-config-next等、本番ビルドに含まれない開発専用ツール)
       # 由来の脆弱性は対象外にする。理由: braces(GHSA-vfj7-8cjw-p6xm)のように、

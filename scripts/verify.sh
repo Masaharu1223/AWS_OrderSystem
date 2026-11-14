@@ -14,7 +14,10 @@ echo "== [web] Lint (eslint) =="
 (cd web && npm run lint)
 
 echo "== [web] Build =="
-(cd web && npm run build)
+# NEXT_PUBLIC_*は必須(未設定だとビルドが止まる)。ここではビルドが通るかだけを見るので、
+# 手元の.env.localに左右されないよう、ダミー値を明示的に渡す(process.envが.env.localより優先)。
+(cd web && NEXT_PUBLIC_API_BASE_URL=https://api.example.invalid \
+  NEXT_PUBLIC_STAFF_CLIENT_ID=dummy-client-id npm run build)
 
 echo "== [infra] Build =="
 (cd infra && bun run build)
