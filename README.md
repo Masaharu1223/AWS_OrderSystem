@@ -19,7 +19,7 @@
 本アプリはカフェ向けモバイルオーダーアプリです。お客様はQRコードからWebページを開いて商品を注文し、店舗に着いたタイミングで受け取れる体験を提供します。
 フロントエンド（Next.js）・バックエンド（Python Lambda）・インフラ（AWS CDK）を1リポジトリで管理するモノレポ構成。
 
-詳細なAPI契約・DynamoDBキー設計は [`docs/architecture.md`](docs/architecture.md)、要件定義は [`docs/requirements.md`](docs/requirements.md)（非エンジニア向けは [`docs/requirements-plain.md`](docs/requirements-plain.md)）を参照。CDKの外で手作業で管理している設定（秘密情報・GitHub連携など）と運用手順は [`docs/operations.md`](docs/operations.md) にまとめている。
+詳細なAPI契約・DynamoDBキー設計は [`docs/architecture.md`](docs/architecture.md)、要件定義は [`docs/requirements.md`](docs/requirements.md)（非エンジニア向けは [`docs/requirements-plain.md`](docs/requirements-plain.md)）を参照。CDKの外で手作業で管理している設定（秘密情報・GitHub連携など）と運用手順は [`docs/operations.md`](docs/operations.md) にまとめている。ソースコードから描いた C4 モデル図(顧客編・店員編)は [`docs/architecture-c4.md`](docs/architecture-c4.md) にある。
 
 ## 必要な環境変数・コマンドの一覧
 
