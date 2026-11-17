@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWS_OrderSystem C4モデル</title>
+<!-- ブラウザでこのファイルを直接開いて見る。GitHub 上で見るときは同じ内容の architecture-c4.md を使う -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&family=Zen+Maru+Gothic:wght@700&display=swap">
+<style>
+/* Layout: 顧客編・店員編の2部構成。各部は C4 の Level 1→4 を同じ順・同じ見出し形で並べ、図は横スクロール枠に入れる */
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --fg: #1b2633;
+  --muted: #5a6878;
+  --line: #d7dee7;
+  --accent: #1168bd;
+  --customer: #0f7a5c;
+  --staff: #8a4b0f;
+  --c4-person: #08427b;
+  --c4-system: #1168bd;
+  --c4-container: #438dd5;
+  --c4-component: #85bbf0;
+  --c4-external: #7d8794;
+  --code-bg: #eef2f7;
+  --warn: #9a5b00;
+  --warn-bg: #fff4e0;
+  --font-display: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Zen Kaku Gothic New", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10161d; --surface: #17202a; --fg: #e3e9f0; --muted: #9aa8b7; --line: #2a3644;
+    --accent: #6fb0f0; --customer: #4fc9a3; --staff: #f0a75e;
+    --code-bg: #1e2935; --warn: #f0b45a; --warn-bg: #2b2112;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10161d; --surface: #17202a; --fg: #e3e9f0; --muted: #9aa8b7; --line: #2a3644;
+  --accent: #6fb0f0; --customer: #4fc9a3; --staff: #f0a75e;
+  --code-bg: #1e2935; --warn: #f0b45a; --warn-bg: #2b2112;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body);
+  font-size: 15px; line-height: 1.75;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1000px; margin: 0 auto; padding-block: 40px 80px; display: grid; gap: 64px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.35; margin: 0; }
+h1 { font-size: clamp(1.7rem, 4vw, 2.3rem); }
+h2 { font-size: clamp(1.5rem, 3.4vw, 1.9rem); }
+h3 { font-size: 1.25rem; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+p { margin: 0; max-width: 70ch; }
+.lead { color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.85rem; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 0.85rem; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 10px; }
+nav.toc a { text-decoration: none; color: var(--fg); border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 10px 16px; display: grid; gap: 2px; min-width: 200px; }
+nav.toc a:focus-visible, nav.toc a:hover { border-color: var(--accent); outline: none; }
+nav.toc small { color: var(--muted); font-size: 0.8rem; }
+.part { display: grid; gap: 40px; padding-top: 28px; border-top: 4px solid var(--part); }
+.part.customer { --part: var(--customer); }
+.part.staff { --part: var(--staff); }
+.part-head { display: grid; gap: 10px; }
+.part-tag { font-family: var(--font-mono); font-size: 0.8rem; letter-spacing: 0.08em; color: var(--part); }
+section { display: grid; gap: 16px; min-width: 0; }
+.level { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; color: var(--part); border: 1px solid var(--part); border-radius: 4px; padding: 1px 8px; white-space: nowrap; }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto; }
+.diagram pre.mermaid { margin: 0; min-width: 680px; text-align: center; background: transparent; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; min-width: 560px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-size: 0.78rem; letter-spacing: 0.04em; color: var(--muted); font-weight: 500; background: var(--code-bg); }
+tr:last-child td { border-bottom: none; }
+td.nowrap { white-space: nowrap; }
+.pill { display: inline-block; font-size: 0.75rem; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.pill.auth { color: var(--accent); border-color: var(--accent); }
+.notes { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.notes li { background: var(--warn-bg); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 6px 6px 0; max-width: 80ch; }
+.notes li strong { color: var(--warn); }
+.shared { display: grid; gap: 40px; padding-top: 28px; border-top: 4px solid var(--line); }
+footer { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+html { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header style="display:grid;gap:16px">
+  <h1>AWS_OrderSystem C4モデル</h1>
+  <p class="lead">カフェ向けモバイルオーダーの現在のアーキテクチャを、<strong>ソースコードだけ</strong>から読み取って描いたものです(設計書 <code>docs/</code> は参照していません)。使う人ごとに、<strong>顧客編</strong>と<strong>店員編</strong>に分けて、それぞれ C4 の Level 1〜4 の図を載せています。</p>
+  <div class="meta">
+    <span>対象: <code>main</code> <span class="mono">a56f956</span></span>
+    <span>作成日: 2026-11-15</span>
+    <span>読んだ範囲: <code>infra/</code> <code>services/src/</code> <code>web/src/</code> <code>amplify.yml</code></span>
+  </div>
+  <div class="legend" aria-label="凡例">
+    <span><i class="sw" style="background:var(--c4-person)"></i>人</span>
+    <span><i class="sw" style="background:var(--c4-system)"></i>このシステム</span>
+    <span><i class="sw" style="background:var(--c4-container)"></i>コンテナ(デプロイ単位)</span>
+    <span><i class="sw" style="background:var(--c4-component)"></i>コンポーネント(部品)</span>
+    <span><i class="sw" style="background:var(--c4-external)"></i>外部システム</span>
+  </div>
+  <nav class="toc" aria-label="目次">
+    <a href="#customer"><strong>顧客編</strong><small>メニュー → カート → 注文 → 状況確認</small></a>
+    <a href="#staff"><strong>店員編</strong><small>ログイン → ゾーンのキュー → 状態更新・受け渡し</small></a>
+    <a href="#shared"><strong>共通</strong><small>データの持ち方・デプロイ・気づいた点</small></a>
+  </nav>
+</header>
+
+<!-- ==================================================== 顧客編 -->
+<div class="part customer" id="customer">
+  <div class="part-head">
+    <span class="part-tag">PART 1 / CUSTOMER</span>
+    <h2>顧客編</h2>
+    <p class="lead">お客様がスマホのブラウザでメニューを見て、カートに入れ、注文し、作成状況を確認するまでに関わる部分です。ログインは無く、カートはブラウザが作った ID で識別します。</p>
+  </div>
+
+  <section>
+    <h3><span class="level">LEVEL 1</span>システムコンテキスト</h3>
+    <p>顧客はシステムだけとやり取りします。決済は PayPay とつなぐ作りになっていますが、既定の設定(<code>auto-approve</code>)では外部とは通信せず、常に支払い成功として扱います。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart LR
+  customer["顧客&lt;br/&gt;[人]&lt;br/&gt;スマホのブラウザで&lt;br/&gt;注文・状況確認・キャンセル"]
+  sys["モバイルオーダーシステム&lt;br/&gt;[このシステム]&lt;br/&gt;メニュー・カート・注文・作成状況"]
+  paypay["PayPay&lt;br/&gt;[外部システム]&lt;br/&gt;決済&lt;br/&gt;既定では使わない"]
+  customer -->|"メニュー閲覧・注文・ポーリング(HTTPS)"| sys
+  sys -.->|"決済の作成・結果確認&lt;br/&gt;paypay 指定時のみ"| paypay
+  classDef person fill:#08427b,stroke:#052e56,color:#ffffff
+  classDef system fill:#1168bd,stroke:#0b4884,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class customer person
+  class sys system
+  class paypay ext
+</pre></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 2</span>コンテナ</h3>
+    <p>画面は Amplify Hosting から静的ファイルとして届き、ブラウザが API Gateway を直接呼びます。顧客向けの API は認証なしで、4 つの Lambda 関数が受け持ちます。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart LR
+  customer["顧客"]
+  subgraph aws["モバイルオーダーシステム(AWS ap-northeast-1)"]
+    web["顧客画面&lt;br/&gt;[Next.js 静的エクスポート / Amplify Hosting]&lt;br/&gt;メニュー・カート・注文状況"]
+    api["HTTP API&lt;br/&gt;[API Gateway]&lt;br/&gt;認証なし・CORS・スロットリング"]
+    menu["menu-fn&lt;br/&gt;[Lambda Python 3.12]&lt;br/&gt;メニュー参照"]
+    cart["cart-fn&lt;br/&gt;[Lambda Python 3.12]&lt;br/&gt;カート操作"]
+    order["order-fn&lt;br/&gt;[Lambda Python 3.12]&lt;br/&gt;注文作成・キャンセル"]
+    status["status-fn&lt;br/&gt;[Lambda Python 3.12]&lt;br/&gt;注文状況・決済確定"]
+    ddb[("MobileOrderTable&lt;br/&gt;[DynamoDB]")]
+    ssm[("PayPay キー&lt;br/&gt;[SSM SecureString]")]
+  end
+  paypay["PayPay"]
+  customer -->|"HTML/JS を取得"| web
+  web -->|"fetch(HTTPS)"| api
+  api --> menu & cart & order & status
+  menu & cart & order & status --> ddb
+  order & status -.->|"paypay 指定時"| ssm
+  order & status -.->|"paypay 指定時"| paypay
+  classDef person fill:#08427b,stroke:#052e56,color:#ffffff
+  classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class customer person
+  class web,api,menu,cart,order,status,ddb,ssm container
+  class paypay ext
+  style aws fill:transparent,stroke:#1168bd,stroke-dasharray:6 4
+</pre></div>
+    <div class="tbl"><table>
+      <thead><tr><th>API</th><th>関数</th><th>何をするか(コードから)</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET /menu</code> <code>GET /menu/{productId}</code></td><td class="nowrap">menu-fn</td><td>商品を読み、並び順を整えて返す</td></tr>
+        <tr><td><code>GET /cart/{sessionId}</code> <code>POST …/items</code> <code>PUT|DELETE …/items/{itemId}</code></td><td class="nowrap">cart-fn</td><td>商品とサイズ・温度を検証して明細を追加・変更・削除。更新のたびに期限を 24 時間延長</td></tr>
+        <tr><td><code>POST /orders</code> <code>PATCH /orders/{orderId}/cancel</code></td><td class="nowrap">order-fn</td><td>カートとメニューから価格を再計算し、仮注文(<code>PENDING_PAYMENT</code>)を作って決済 URL を返す。キャンセルは全明細が未着手のときだけ</td></tr>
+        <tr><td><code>GET /orders/{orderId}</code> <code>GET /orders/{orderId}/queue-position</code></td><td class="nowrap">status-fn</td><td>仮注文なら決済結果を確認し、成功なら本注文に確定。状況・待ち順・次のポーリング間隔を返す</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 3</span>コンポーネント</h3>
+    <p>上半分が画面側(<code>web/src</code>)、下半分が Lambda 側(<code>services/src</code>)の部品です。Lambda は <strong>handlers</strong>(入口)→ <strong>domain</strong>(AWS に依存しない業務ルール)/ <strong>adapters</strong>(DynamoDB・決済)の 3 層に分かれています。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart TB
+  subgraph W["顧客画面 web/src"]
+    direction LR
+    p1["/ メニュー&lt;br/&gt;MenuList・InlineCustomize"]
+    p2["/cart/ カート&lt;br/&gt;CartView・CartCountProvider"]
+    p3["/order/?id= 注文状況&lt;br/&gt;OrderConfirmation・useOrderStatus"]
+    lm["lib/menu・lib/cart&lt;br/&gt;lib/orders・lib/status"]
+    ls["lib/session&lt;br/&gt;sessionId を localStorage に保存"]
+    la["lib/api&lt;br/&gt;共通 fetch・ApiError"]
+    p1 & p2 & p3 --> lm
+    p1 & p2 --> ls
+    lm --> la
+  end
+  api["HTTP API"]
+  subgraph L["Lambda services/src"]
+    direction LR
+    h["handlers&lt;br/&gt;menu.py・cart.py&lt;br/&gt;order.py・status.py"]
+    d["domain&lt;br/&gt;menu: 価格・バリエーション検証&lt;br/&gt;cart: 明細生成・TTL&lt;br/&gt;order: ゾーン決定・注文組み立て&lt;br/&gt;status: ポーリング間隔・待ち時間見積もり"]
+    r["adapters&lt;br/&gt;MenuRepository・CartRepository&lt;br/&gt;OrderRepository"]
+    pay["adapters/payment&lt;br/&gt;factory → auto-approve / paypay"]
+    h --> d
+    h --> r
+    h --> pay
+  end
+  ddb[("DynamoDB")]
+  pp["PayPay"]
+  la -->|"HTTPS"| api
+  api --> h
+  r --> ddb
+  pay -.-> pp
+  classDef comp fill:#85bbf0,stroke:#5a8fc4,color:#0b2540
+  classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class p1,p2,p3,lm,ls,la,h,d,r,pay comp
+  class api,ddb container
+  class pp ext
+</pre></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 4</span>コード(注文の作成と確定)</h3>
+    <p>顧客の流れで中心になるクラスです。order-fn は <code>PendingPaymentOrder</code>(仮注文)を作り、status-fn が決済成功を確認すると <code>OrderRepository.finalize_paid_order()</code> で <code>Order</code> と <code>OrderLine</code>(本注文)に置き換えます。決済は <code>PaymentProvider</code> という共通の形に合わせた実装を差し替えて使います。</p>
+    <div class="diagram"><pre class="mermaid">
+classDiagram
+  direction LR
+  class Product {
+    product_id: str
+    category: Category
+    base_price: int
+    size_delta: dict
+    allow_hot / allow_iced: bool
+    available: bool
+  }
+  class Variant {
+    temperature: hot or iced
+    size: S / M / L
+    to_key_segment() str
+  }
+  class CartItem {
+    product_id: str
+    variant: Variant
+    quantity: 1..10
+    unit_price: int
+    expires_at: int
+    item_id() str
+    line_total() int
+  }
+  class PendingPaymentOrder {
+    order_id: str
+    store_id: str
+    session_id: str
+    status: PENDING_PAYMENT / PAYMENT_FAILED
+    total_price: int
+    checkout_url: str
+  }
+  class Order {
+    order_id: str
+    order_number: int
+    store_id: str
+    lines: list~OrderLine~
+    status() OrderStatus
+    total_price() int
+  }
+  class OrderLine {
+    line_id: str
+    zone: A / B / C / D
+    status: LineStatus
+    queue_seq: int
+    unit_price: int
+    line_total() int
+  }
+  class PaymentProvider {
+    &lt;&lt;interface&gt;&gt;
+    create_payment(order_id, amount_yen) str
+    get_payment_status(order_id) PaymentOutcome
+  }
+  class AutoApprovePaymentClient
+  class PayPayPaymentClient
+  class OrderRepository {
+    create_pending_payment_order()
+    get_order_or_pending()
+    finalize_paid_order()
+    mark_payment_failed()
+    cancel_order()
+    count_ahead_in_zone()
+    get_zone_stat()
+  }
+  class CartRepository {
+    list_items()
+    put_item()
+    update_quantity()
+    delete_item()
+  }
+  class MenuRepository {
+    list_products()
+    get_product()
+  }
+  CartItem --> Variant
+  OrderLine --> Variant
+  Order "1" *-- "1..20" OrderLine
+  PaymentProvider &lt;|.. AutoApprovePaymentClient
+  PaymentProvider &lt;|.. PayPayPaymentClient
+  OrderRepository ..> PendingPaymentOrder : 作成
+  OrderRepository ..> Order : 確定・取得
+  CartRepository ..> CartItem
+  MenuRepository ..> Product
+</pre></div>
+    <p class="lead">ゾーンは商品のカテゴリとサイズで決まります(エスプレッソ L→A、M→B、S→C。紅茶とフラッペ→D)。1 注文の明細は最大 20、1 明細の数量は最大 10 です。</p>
+  </section>
+</div>
+
+<!-- ==================================================== 店員編 -->
+<div class="part staff" id="staff">
+  <div class="part-head">
+    <span class="part-tag">PART 2 / STAFF</span>
+    <h2>店員編</h2>
+    <p class="lead">店員がタブレットでログインし、担当ゾーン(A〜D)のキューを見ながら明細を「作成中」「完成」と進め、店舗の自動受渡システムが受け渡しを確定するまでに関わる部分です。</p>
+  </div>
+
+  <section>
+    <h3><span class="level">LEVEL 1</span>システムコンテキスト</h3>
+    <p>店員はログインしてシステムを使います。受け渡しの確定は人ではなく、店舗の自動受渡システムが API キーで呼び出します。キューに並ぶ明細は、顧客の注文から作られます。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart LR
+  staff["店員&lt;br/&gt;[人]&lt;br/&gt;タブレットで&lt;br/&gt;ゾーン別に明細を進める"]
+  customer["顧客&lt;br/&gt;[人]&lt;br/&gt;注文する(顧客編)"]
+  sys["モバイルオーダーシステム&lt;br/&gt;[このシステム]&lt;br/&gt;ゾーン別の製造キュー"]
+  handover["自動受渡システム&lt;br/&gt;[外部システム]&lt;br/&gt;店舗の受け渡し設備"]
+  staff -->|"ログイン・キュー表示・状態更新(HTTPS)"| sys
+  handover -->|"受け渡し確定(x-api-key)"| sys
+  customer -.->|"注文がキューに入る"| sys
+  classDef person fill:#08427b,stroke:#052e56,color:#ffffff
+  classDef other fill:#08427b,stroke:#052e56,color:#ffffff,stroke-dasharray:4 3
+  classDef system fill:#1168bd,stroke:#0b4884,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class staff person
+  class customer other
+  class sys system
+  class handover ext
+</pre></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 2</span>コンテナ</h3>
+    <p>店員画面は顧客画面と同じ Amplify のサイトにあります。ログインはブラウザが Cognito を直接呼び、受け取った ID トークンを付けて API を呼びます。API Gateway がトークンを検証してから store-fn に渡します。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart LR
+  staff["店員"]
+  handover["自動受渡システム"]
+  subgraph aws["モバイルオーダーシステム(AWS ap-northeast-1)"]
+    web["店員画面&lt;br/&gt;[Next.js 静的エクスポート / Amplify Hosting]&lt;br/&gt;ログイン・ゾーン選択・明細キュー"]
+    cognito["店員ユーザープール&lt;br/&gt;[Cognito]&lt;br/&gt;USER_PASSWORD_AUTH"]
+    api["HTTP API&lt;br/&gt;[API Gateway]&lt;br/&gt;JWT オーソライザー"]
+    store["store-fn&lt;br/&gt;[Lambda Python 3.12]&lt;br/&gt;ゾーン一覧・状態更新・受け渡し"]
+    ddb[("MobileOrderTable&lt;br/&gt;[DynamoDB]")]
+    ssm[("受渡の合言葉&lt;br/&gt;[SSM SecureString]")]
+  end
+  staff -->|"HTML/JS を取得"| web
+  web -->|"InitiateAuth(ログイン・更新)"| cognito
+  web -->|"Authorization: Bearer ID トークン"| api
+  handover -->|"x-api-key"| api
+  api -.->|"トークン検証"| cognito
+  api --> store
+  store --> ddb
+  store -->|"合言葉を読む"| ssm
+  classDef person fill:#08427b,stroke:#052e56,color:#ffffff
+  classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class staff person
+  class web,cognito,api,store,ddb,ssm container
+  class handover ext
+  style aws fill:transparent,stroke:#1168bd,stroke-dasharray:6 4
+</pre></div>
+    <div class="tbl"><table>
+      <thead><tr><th>API</th><th>認証</th><th>何をするか(コードから)</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET /stores/{storeId}/zones/{zone}/lines</code></td><td><span class="pill auth">Cognito JWT</span></td><td>そのゾーンの「待ち」「作成中」の明細を受付順に返す(GSI2。完成・キャンセルになるとキューから外れる)。次のポーリング間隔つき</td></tr>
+        <tr><td><code>PATCH /orders/{orderId}/lines/{lineId}/status</code></td><td><span class="pill auth">Cognito JWT</span></td><td>明細を 待ち→作成中→完成 と 1 段ずつ進める。顧客のキャンセルと同時になったら最大 2 回再試行し、それでもだめなら 503</td></tr>
+        <tr><td><code>PATCH /orders/{orderId}/lines/{lineId}/handover</code></td><td><span class="pill auth">x-api-key</span></td><td>自動受渡システムが受け渡しを確定する。合言葉は Lambda 内で定数時間比較</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 3</span>コンポーネント</h3>
+    <p>画面側はログイン状態を <code>StaffAuthProvider</code> がまとめて持ち、トークンの期限が近づくと自動で更新します。明細をスワイプしてから 3 秒間は「取り消し」バナーが出て、取り消さなかったときだけ API に書き込みます。</p>
+    <div class="diagram"><pre class="mermaid">
+flowchart TB
+  subgraph W["店員画面 web/src"]
+    direction LR
+    p4["/staff/ ゾーン選択&lt;br/&gt;ZonePicker"]
+    p5["/staff/zone/A〜D/&lt;br/&gt;ZoneQueueScreen・ZoneLineCard"]
+    undo["UndoBanner&lt;br/&gt;3 秒以内なら取り消し"]
+    auth["StaffAuthProvider&lt;br/&gt;RequireStaffAuth・StaffLoginForm"]
+    hook["useZoneLines&lt;br/&gt;ポーリング・失敗時は待ち時間を延長"]
+    lst["lib/staff&lt;br/&gt;fetchZoneLines・updateLineStatus"]
+    lau["lib/auth&lt;br/&gt;signIn・refreshTokens&lt;br/&gt;トークンは sessionStorage"]
+    la["lib/api&lt;br/&gt;共通 fetch"]
+    p4 & p5 --> auth
+    p5 --> undo
+    p5 --> hook
+    hook & undo --> lst
+    auth --> lau
+    lst --> la
+  end
+  cog["Cognito"]
+  api["HTTP API&lt;br/&gt;JWT オーソライザー"]
+  subgraph L["store-fn services/src"]
+    direction LR
+    h["handlers/store.py&lt;br/&gt;一覧・状態更新・受け渡し"]
+    d["domain&lt;br/&gt;fulfillment: 状態遷移ルール・注文ステータス導出&lt;br/&gt;store: ゾーン一覧レスポンス"]
+    r["adapters/OrderRepository&lt;br/&gt;条件付き更新・競合時の再試行"]
+    ha["adapters/HandoverAuthenticator&lt;br/&gt;合言葉の比較"]
+    h --> d
+    h --> r
+    h --> ha
+  end
+  ddb[("DynamoDB")]
+  ssm[("SSM")]
+  ext["自動受渡システム"]
+  lau -->|"InitiateAuth"| cog
+  la -->|"Bearer トークン"| api
+  ext -->|"x-api-key"| api
+  api --> h
+  r --> ddb
+  ha --> ssm
+  classDef comp fill:#85bbf0,stroke:#5a8fc4,color:#0b2540
+  classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
+  classDef ext fill:#7d8794,stroke:#5b6470,color:#ffffff
+  class p4,p5,undo,auth,hook,lst,lau,la,h,d,r,ha comp
+  class cog,api,ddb,ssm container
+  class ext ext
+</pre></div>
+  </section>
+
+  <section>
+    <h3><span class="level">LEVEL 4</span>コード(明細の状態更新と受け渡し)</h3>
+    <p>店員の流れで中心になるクラスです。明細の状態は <code>LineStatus</code> で表し、進めてよいのは「待ち→作成中」「作成中→完成」の 2 通りだけです(<code>is_allowed_line_status_transition()</code>)。DynamoDB 側でも条件付き更新で同じ制約を守り、他の更新と衝突したときは例外で知らせます。</p>
+    <div class="diagram"><pre class="mermaid">
+classDiagram
+  direction LR
+  class LineStatus {
+    &lt;&lt;enumeration&gt;&gt;
+    WAITING
+    PREPARING
+    READY
+    HANDED_OVER
+    CANCELLED
+  }
+  class fulfillment {
+    &lt;&lt;module&gt;&gt;
+    is_allowed_line_status_transition(from, to) bool
+    derive_order_status(line_statuses) OrderStatus
+  }
+  class ZoneLine {
+    order_id: str
+    order_number: int
+    line_id: str
+    zone: A / B / C / D
+    name: str
+    variant: Variant
+    quantity: int
+    status: LineStatus
+    queue_seq: int
+  }
+  class ZoneLinesResponse {
+    lines: list~ZoneLine~
+    poll_after_seconds: int
+  }
+  class LineStatusUpdateResponse {
+    order_id: str
+    line_id: str
+    status: LineStatus
+    prepared_at: str
+    ready_at: str
+  }
+  class OrderRepository {
+    list_zone_lines(store_id, zone) list~OrderLine~
+    update_line_status(order_id, line_id, from, to)
+    handover_line(order_id, line_id, now)
+  }
+  class LineTransitionConflictError {
+    409 を返す
+  }
+  class LineBusyError {
+    再試行しても競合 → 503
+  }
+  class HandoverAuthenticator {
+    verify(provided_key) bool
+  }
+  class StaffAuthContext {
+    &lt;&lt;web&gt;&gt;
+    status
+    idToken
+    login(username, password)
+    logout()
+    refresh() idToken
+  }
+  class AuthTokens {
+    &lt;&lt;web&gt;&gt;
+    idToken
+    accessToken
+    refreshToken
+    expiresAt
+  }
+  ZoneLinesResponse "1" *-- "*" ZoneLine
+  ZoneLine --> LineStatus
+  LineStatusUpdateResponse --> LineStatus
+  fulfillment ..> LineStatus
+  OrderRepository ..> LineTransitionConflictError : 送出
+  OrderRepository ..> LineBusyError : 送出
+  OrderRepository ..> ZoneLine : 一覧の元データ
+  StaffAuthContext --> AuthTokens
+</pre></div>
+  </section>
+</div>
+
+<!-- ==================================================== 共通 -->
+<div class="shared" id="shared">
+  <div class="part-head">
+    <h2>共通</h2>
+    <p class="lead">顧客編と店員編の両方にまたがる部分です。</p>
+  </div>
+
+  <section>
+    <h3>DynamoDB のアイテム(単一テーブル <code>MobileOrderTable</code>)</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>何のデータか</th><th>PK</th><th>SK</th><th>使う側・備考</th></tr></thead>
+      <tbody>
+        <tr><td>商品</td><td><code>MENU</code></td><td><code>PROD#&lt;productId&gt;</code></td><td>顧客</td></tr>
+        <tr><td>カート明細</td><td><code>CART#&lt;sessionId&gt;</code></td><td><code>ITEM#&lt;productId&gt;#&lt;バリエーション&gt;</code></td><td>顧客。TTL <code>expiresAt</code>(24 時間)</td></tr>
+        <tr><td>注文ヘッダ</td><td><code>ORDER#&lt;orderId&gt;</code></td><td><code>META</code></td><td>両方。GSI1 <code>STORE#&lt;店舗&gt;#&lt;ステータス&gt;</code></td></tr>
+        <tr><td>注文明細</td><td><code>ORDER#&lt;orderId&gt;</code></td><td><code>LINE#&lt;lineId&gt;</code></td><td>両方。GSI2 <code>ZONE#&lt;店舗&gt;#&lt;ゾーン&gt;</code> × 受付順(店員のキュー)</td></tr>
+        <tr><td>決済待ちの明細</td><td><code>ORDER#&lt;orderId&gt;</code></td><td><code>PENDINGLINE#&lt;lineId&gt;</code></td><td>顧客。決済確定時に <code>LINE#</code> へ置き換え</td></tr>
+        <tr><td>冪等キー</td><td colspan="2"><code>IDEMPOTENCY#&lt;key&gt;</code>(PK・SK 同じ)</td><td>顧客。同じ注文の二重作成を防ぐ</td></tr>
+        <tr><td>採番カウンタ</td><td><code>ORDERNUM#&lt;店舗&gt;#&lt;日付&gt;</code> / <code>ZONESEQ#&lt;店舗&gt;#&lt;ゾーン&gt;</code></td><td><code>COUNTER</code></td><td>注文番号とゾーン内の受付順</td></tr>
+        <tr><td>ゾーン統計</td><td><code>ZONESTAT#&lt;店舗&gt;#&lt;ゾーン&gt;</code></td><td><code>STAT</code></td><td>顧客向けの待ち時間見積もり</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>デプロイ構成(CDK)</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>スタック</th><th>中身</th></tr></thead>
+      <tbody>
+        <tr><td class="nowrap"><code>MobileOrder-{stage}-Stateful</code></td><td>DynamoDB テーブル(GSI1・GSI2、PITR、削除保護、スタック削除時も保持)、Cognito 店員ユーザープールとアプリクライアント</td></tr>
+        <tr><td class="nowrap"><code>MobileOrder-{stage}-App</code></td><td>Lambda 5 関数(Python 3.12・arm64・X-Ray)、Powertools Layer と PayPay SDK Layer、HTTP API(ルート・JWT オーソライザー・スロットリング・CORS)、Amplify アプリと <code>main</code> ブランチ(dev のみ)</td></tr>
+      </tbody>
+    </table></div>
+    <p class="lead">Amplify は GitHub の <code>main</code> への push で自動ビルドします。stage は <code>dev</code> と <code>prod</code> で、prod では Amplify を作らず、決済の <code>auto-approve</code> を使うと合成時にエラーになります。</p>
+  </section>
+
+  <section>
+    <h3>コードを読んで気づいた点</h3>
+    <ul class="notes">
+      <li><strong>顧客: 決済画面へは移動しない</strong> order-fn は決済 URL を返しますが、画面は注文のあとすぐ <code>/order?id=</code> に移ります(<code>CartView.tsx</code>)。<code>auto-approve</code> 前提の作りで、PayPay を使うには画面側の対応が要ります。</li>
+      <li><strong>両方: 店舗 ID は固定</strong> 画面の店舗 ID は <code>store-01</code> で固定です(<code>web/src/lib/orders.ts</code>)。複数店舗には対応していません。</li>
+      <li><strong>両方: リアルタイム通知は無い</strong> 状態の反映はすべてポーリングです。WebSocket・SQS・EventBridge のリソースはコードにありません。</li>
+      <li><strong>店員: 状態は進めるだけ</strong> 戻す API はありません。押し間違いはスワイプ後 3 秒の取り消しバナーで防ぎます。</li>
+    </ul>
+  </section>
+</div>
+
+<footer>図は Mermaid で描いています。各図の内容は <code>main</code>(a56f956)時点のソースコードに基づきます。同じ内容の Markdown 版(GitHub 上で図が表示される)は <code>docs/architecture-c4.md</code> です。コードを変えたら両方を更新してください。</footer>
+</div>
+
+<script type="module">
+  // <pre class="mermaid"> の中身を図に変換する。バージョンは固定(勝手に上がって描画が変わらないように)
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+</script>
+</body>
+</html>
