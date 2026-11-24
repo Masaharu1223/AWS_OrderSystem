@@ -44,10 +44,10 @@
 | `services/` | `pytest` | ユニットテスト |
 | `services/` | `ruff check .` | Lint |
 | `services/` | `mypy src` | 型チェック |
-| `infra/` | `npm run build` | TypeScriptの型チェック |
-| `infra/` | `npm run test` | Jestテスト（cdk-nagのセキュリティチェックを含む） |
-| `infra/` | `npx cdk synth --context stage=dev` | CloudFormationテンプレートの合成 |
-| `infra/` | `npx cdk deploy --all --context stage=dev` | dev環境へデプロイ |
+| `infra/` | `bun run build` | TypeScriptの型チェック |
+| `infra/` | `bun run test` | Jestテスト（cdk-nagのセキュリティチェックを含む） |
+| `infra/` | `bunx cdk synth --context stage=dev` | CloudFormationテンプレートの合成 |
+| `infra/` | `bunx cdk deploy --all --context stage=dev` | dev環境へデプロイ |
 
 ## ディレクトリ構成
 
@@ -77,8 +77,10 @@
 
 ### 前提条件
 
-- Node.js 22（CI・Amplify Hosting のビルドと同じバージョン。`web/`・`infra/`共にnpmで依存解決）
+- Node.js 22（CI・Amplify Hosting のビルドと同じバージョン）
+- Bun 1.3.14（CI と同じバージョン。`infra/` の依存解決とコマンド実行に使う。`web/` は npm）
 - Python 3.12以上
+- Docker（起動しておく。`infra/` の `cdk synth`・テスト・デプロイで、PayPay SDK の Lambda Layer をコンテナ内で組み立てるため）
 - AWS CLI設定済み・CDKブートストラップ済みのAWSアカウント（`infra/`のデプロイに必要）
 
 ### セットアップ
@@ -110,11 +112,13 @@
 4. インフラ（`infra/`）
    ```bash
    cd infra
-   npm install
-   npm run build
-   npx cdk synth --context stage=dev
+   bun install
+   bun run build
+   bunx cdk synth --context stage=dev
    ```
-   実際にAWSへデプロイする場合は `npx cdk deploy --all --context stage=dev` を実行する（既存のAWSリソースに影響するため、実行前に対象アカウント・リージョンを確認すること）。
+   `infra/` のロックファイルは `bun.lock` なので、`npm install` は使わない（`package-lock.json` が別に作られ、依存のバージョンがずれる）。
+
+   実際にAWSへデプロイする場合は `bunx cdk deploy --all --context stage=dev` を実行する（既存のAWSリソースに影響するため、実行前に対象アカウント・リージョンを確認すること）。
 
 ## トラブルシューティング
 
